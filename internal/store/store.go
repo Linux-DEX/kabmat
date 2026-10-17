@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -271,19 +272,45 @@ func (s *Store) Index(name string) (int, error) {
 	return 0, fmt.Errorf("no board named %q was found", name)
 }
 
-func (s *Store) CreateBoard(name string) error {
+func validBoardName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return errors.New("can't create a board with empty name")
+		return "", errors.New("board name can't be empty")
+	}
+	if strings.ContainsAny(name, "\r\n") {
+		return "", errors.New("board name can't contain a newline")
+	}
+	return name, nil
+}
+
+func (s *Store) nameTaken(name string, except int) bool {
+	for i := range s.Boards {
+		if i != except && s.Boards[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) CreateBoard(name string) error {
+	name, err := validBoardName(name)
+	if err != nil {
+		return err
+	}
+	if s.nameTaken(name, -1) {
+		return fmt.Errorf("board %q already exists", name)
 	}
 	s.Boards = append(s.Boards, Board{Name: name})
 	return s.save()
 }
 
 func (s *Store) RenameBoard(i int, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return errors.New("board name can't be empty")
+	name, err := validBoardName(name)
+	if err != nil {
+		return err
+	}
+	if s.nameTaken(name, i) {
+		return fmt.Errorf("board %q already exists", name)
 	}
 	s.Boards[i].Name = name
 	return s.save()
@@ -295,17 +322,11 @@ func (s *Store) DeleteBoardAt(i int) error {
 }
 
 func (s *Store) DeleteBoardNamed(name string) error {
-	if _, err := s.Index(name); err != nil {
+	i, err := s.Index(name)
+	if err != nil {
 		return err
 	}
-	kept := s.Boards[:0]
-	for _, b := range s.Boards {
-		if b.Name != name {
-			kept = append(kept, b)
-		}
-	}
-	s.Boards = kept
-	return s.save()
+	return s.DeleteBoardAt(i)
 }
 
 func (s *Store) MoveBoard(i, dir int) (bool, error) {
@@ -396,9 +417,12 @@ func (s *Store) MoveCardVert(bi, ci, cardi, dir int) (bool, error) {
 }
 
 func (s *Store) MoveCardHoriz(bi, src, cardi, dir int) (bool, error) {
+	return s.MoveCardTo(bi, src, cardi, src+dir)
+}
+
+func (s *Store) MoveCardTo(bi, src, cardi, dst int) (bool, error) {
 	cols := s.Boards[bi].Columns
-	dst := src + dir
-	if dst < 0 || dst >= len(cols) || cardi < 0 || cardi >= len(cols[src].Cards) {
+	if src == dst || src < 0 || dst < 0 || src >= len(cols) || dst >= len(cols) || cardi < 0 || cardi >= len(cols[src].Cards) {
 		return false, nil
 	}
 	card := cols[src].Cards[cardi]
@@ -480,6 +504,41 @@ func (s *Store) Flush() error {
 	}
 	s.dirty = false
 	return nil
+}
+
+type Place struct {
+	Board string
+	Col   int
+	Card  int
+}
+
+func placePath(dataPath string) string {
+	return filepath.Join(filepath.Dir(dataPath), "place")
+}
+
+func LoadPlace(dataPath string) (Place, error) {
+	b, err := os.ReadFile(placePath(dataPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Place{}, nil
+		}
+		return Place{}, err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	if len(lines) < 3 || lines[0] == "" {
+		return Place{}, nil
+	}
+	col, err1 := strconv.Atoi(lines[1])
+	card, err2 := strconv.Atoi(lines[2])
+	if err1 != nil || err2 != nil || col < 0 || card < 0 {
+		return Place{}, nil
+	}
+	return Place{Board: lines[0], Col: col, Card: card}, nil
+}
+
+func SavePlace(dataPath string, p Place) error {
+	data := p.Board + "\n" + strconv.Itoa(p.Col) + "\n" + strconv.Itoa(p.Card) + "\n"
+	return writeFileAtomic(placePath(dataPath), []byte(data), 0o600)
 }
 
 func (s *Store) Undo() (bool, error) { return s.step(&s.undo, &s.redo) }

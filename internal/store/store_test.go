@@ -149,6 +149,29 @@ func TestUndoRedo(t *testing.T) {
 	}
 }
 
+func TestBoardNames(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard(" Work "); err == nil || s.CreateBoard("bad\nname") == nil || s.CreateBoard("  ") == nil {
+		t.Fatal("expected duplicate, newline, and blank names to fail")
+	}
+	if err := s.RenameBoard(0, "Work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Home"); err != nil || s.RenameBoard(1, "Work") == nil {
+		t.Fatal("rename should not collide")
+	}
+	if err := s.DeleteBoardNamed("Work"); err != nil || len(s.Boards) != 1 || s.Boards[0].Name != "Home" {
+		t.Fatalf("delete: %+v %v", s.Boards, err)
+	}
+}
+
 func TestFlushWritesOncePerSession(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data")

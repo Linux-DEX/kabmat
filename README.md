@@ -20,6 +20,7 @@ go run ./cmd/kabmat
 kabmat -l                 list boards
 kabmat -c Work            create a board
 kabmat -o Work            open a board
+kabmat -a "buy milk"      append a card to the first column and exit
 kabmat -d Work            delete a board
 kabmat -t                 change data without opening the TUI
 kabmat -b                 drop cards at the bottom when moving them across columns
@@ -47,9 +48,12 @@ Press `?` inside the TUI for the full key list.
 | Key | Action |
 | --- | --- |
 | `h` / `l` | focus the column to the left / right |
+| `[` / `]` | previous / next board |
 | `j` / `k` | focus the card above / below |
 | `g` / `G` | first / last card |
 | `H` / `L` | move the card to the left / right column |
+| `m` | move the focused card to a chosen column |
+| `X` | clear finished checklist items on the focused card |
 | `K` / `J` | move the focused card up / down |
 | `Ctrl-h`, `Ctrl-p` | move the column left |
 | `Ctrl-l`, `Ctrl-n` | move the column right |
@@ -75,7 +79,7 @@ Card info fills the screen. `Tab` switches between the summary and the descripti
 
 ## Data
 
-Boards are stored in `$HOME/.local/share/kabmat/data`. A copy is written to `data_bkp` before each save. The file is the same indentation format as the original kabmat:
+Boards are stored in `$HOME/.local/share/kabmat/data`. A copy is written to `data_bkp` on the first save of a session. The last board, column, and card are stored in `place` and restored on the next launch. The focused card shows the first line of its description. The file is the same indentation format as the original kabmat:
 
 ```text
 board name

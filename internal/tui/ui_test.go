@@ -62,8 +62,9 @@ func TestBoardFlow(t *testing.T) {
 	if m.screen != screenMenu {
 		t.Fatal("expected menu")
 	}
-	if !strings.Contains(m.View(), "Work") {
-		t.Fatal(m.View())
+	view := m.View()
+	if !strings.Contains(view, "Work") || !strings.Contains(view, "1 col") || !strings.Contains(view, "1 card") {
+		t.Fatal(view)
 	}
 }
 
@@ -202,6 +203,59 @@ func TestYankFilterFold(t *testing.T) {
 	todo := s.Boards[0].Columns[0].Cards
 	if len(todo) != 3 || todo[1].Content != "alpha" || m.notice != "duplicated" {
 		t.Fatalf("dup notice=%q cards=%+v", m.notice, todo)
+	}
+}
+
+func TestMoveClearAndResume(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.CreateBoard("Home") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddColumn(0, "Todo"); err != nil || s.AddColumn(0, "Done") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{
+		Content:     "ship",
+		Description: "first line\nsecond line",
+		Checklist:   []store.ChecklistItem{{Content: "box", Done: true}, {Content: "keep"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "other", Description: "secret note"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 120, 40
+	view := m.View()
+	if !strings.Contains(view, "first line") || strings.Contains(view, "second line") || strings.Contains(view, "secret note") {
+		t.Fatalf("description:\n%s", view)
+	}
+	if !strings.Contains(strings.Join(helpLines, "\n"), "clear finished checklist") {
+		t.Fatal("help keymap missing X")
+	}
+	press(m, "]")
+	if m.curBoard().Name != "Home" {
+		t.Fatalf("board %s", m.curBoard().Name)
+	}
+	press(m, "[", "m", "j", "enter", "X")
+	done := s.Boards[0].Columns[1].Cards
+	if len(s.Boards[0].Columns[0].Cards) != 1 || len(done) != 1 || done[0].Content != "ship" {
+		t.Fatalf("move: %+v", s.Boards[0].Columns)
+	}
+	if len(done[0].Checklist) != 1 || done[0].Checklist[0].Content != "keep" || m.col != 1 {
+		t.Fatalf("clear col=%d list=%+v", m.col, done[0].Checklist)
+	}
+	m.remember()
+	resumed, err := newModel(s, "")
+	if err != nil || resumed.screen != screenBoard || resumed.curBoard().Name != "Work" || resumed.col != 1 {
+		t.Fatalf("resume screen=%d col=%d err=%v", resumed.screen, resumed.col, err)
 	}
 }
 

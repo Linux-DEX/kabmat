@@ -38,6 +38,7 @@ func main() {
 func applyArgs(args []string, s *store.Store, w io.Writer) (bool, string, error) {
 	tuiOn := true
 	open := ""
+	var adds []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		value := func() (string, error) {
@@ -84,6 +85,13 @@ func applyArgs(args []string, s *store.Store, w io.Writer) (bool, string, error)
 			if err := s.DeleteBoardNamed(name); err != nil {
 				return false, "", err
 			}
+		case "-a", "--add":
+			text, err := value()
+			if err != nil {
+				return false, "", err
+			}
+			adds = append(adds, text)
+			tuiOn = false
 		case "-t", "--text":
 			tuiOn = false
 		case "-b", "--card-at-bottom":
@@ -92,7 +100,39 @@ func applyArgs(args []string, s *store.Store, w io.Writer) (bool, string, error)
 			return false, "", fmt.Errorf("unknown option `%s`", a)
 		}
 	}
+	if err := addCards(s, open, adds); err != nil {
+		return false, "", err
+	}
 	return tuiOn, open, nil
+}
+
+func addCards(s *store.Store, open string, texts []string) error {
+	if len(texts) == 0 {
+		return nil
+	}
+	if open == "" {
+		p, err := store.LoadPlace(s.Path)
+		if err != nil {
+			return err
+		}
+		open = p.Board
+	}
+	if open == "" {
+		return fmt.Errorf("no board to add to, use -o")
+	}
+	bi, err := s.Index(open)
+	if err != nil {
+		return err
+	}
+	if len(s.Boards[bi].Columns) == 0 {
+		return fmt.Errorf("board %q has no columns", open)
+	}
+	for _, text := range texts {
+		if err := s.AddCard(bi, 0, store.Card{Content: text}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func usage() string {
@@ -108,6 +148,7 @@ Options:
   -l, --list              list all boards
   -c, --create <name>     create a new board with the name <name>
   -o, --open <name>       open board with name <name>
+  -a, --add <text>        append a card to the first column and exit
   -d, --delete <name>     delete board with name <name>
 
   -t, --text              disable tui

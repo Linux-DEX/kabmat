@@ -28,6 +28,7 @@ const (
 	layerChecklist
 	layerSubtasks
 	layerSubtask
+	layerMove
 )
 
 type inputKind int
@@ -44,6 +45,7 @@ const (
 var repeatable = map[string]bool{
 	"j": true, "k": true, "h": true, "l": true,
 	"J": true, "K": true, "n": true, "N": true, "p": true,
+	"[": true, "]": true,
 	"shift+up": true, "shift+down": true,
 	"ctrl+h": true, "ctrl+l": true, "ctrl+p": true, "ctrl+n": true,
 }
@@ -108,6 +110,8 @@ type model struct {
 	hasClip     bool
 	filtering   bool
 	foldSubs    bool
+	seenBoard   bool
+	moveSel     int
 	search      string
 	searching   bool
 	searchBuf   field
@@ -134,16 +138,39 @@ func newModel(s *store.Store, open string) (*model, error) {
 		foldSubs:     true,
 	}
 	if open == "" {
+		p, err := store.LoadPlace(s.Path)
+		if err != nil {
+			return nil, err
+		}
+		if p.Board == "" {
+			return m, nil
+		}
+		i, err := s.Index(p.Board)
+		if err != nil {
+			return m, nil
+		}
+		m.openBoard(i, true)
+		m.col = p.Col
+		m.growCardSel()
+		if m.col >= 0 && m.col < len(m.cardSel) {
+			m.cardSel[m.col] = p.Card
+		}
 		return m, nil
 	}
 	i, err := s.Index(open)
 	if err != nil {
 		return nil, err
 	}
+	m.openBoard(i, false)
+	return m, nil
+}
+
+func (m *model) openBoard(i int, backToMenu bool) {
 	m.screen = screenBoard
 	m.board = i
-	m.returnToMenu = false
-	return m, nil
+	m.menuSel = i
+	m.returnToMenu = backToMenu
+	m.seenBoard = true
 }
 
 func (m *model) Init() tea.Cmd { return nil }
@@ -160,7 +187,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
-			return m, tea.Quit
+			break
 		}
 		m.notice = ""
 		if m.searching {
@@ -182,6 +209,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.subKey(msg.String(), msg.Runes)
 		case layerCard:
 			m.cardKey(msg.String(), msg.Runes)
+		case layerMove:
+			m.moveKey(msg.String())
 		default:
 			m.normalKey(msg.String())
 		}
@@ -192,6 +221,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.quitting {
+		m.remember()
 		return m, tea.Quit
 	}
 	return m, nil
@@ -261,13 +291,11 @@ func (m *model) menuKey(key string) {
 		}
 	case "enter":
 		if n > 0 {
-			m.board = m.menuSel
 			m.col = 0
 			m.colScroll = 0
 			m.cardSel = nil
 			m.cardScroll = nil
-			m.screen = screenBoard
-			m.returnToMenu = true
+			m.openBoard(m.menuSel, true)
 		}
 	}
 }
@@ -373,6 +401,17 @@ func (m *model) boardKey(key string) {
 		m.toggleFilter()
 	case "z":
 		m.foldSubs = !m.foldSubs
+	case "[":
+		m.switchBoard(-1)
+	case "]":
+		m.switchBoard(1)
+	case "m":
+		if n > 0 && m.cardIndex(m.col) >= 0 {
+			m.moveSel = m.col
+			m.push(layerMove)
+		}
+	case "X":
+		m.clearDone()
 	}
 }
 
@@ -745,6 +784,111 @@ func (m *model) subField() *field {
 	return &m.sub.desc
 }
 
+func (m *model) switchBoard(dir int) {
+	next := m.board + dir
+	if next < 0 || next >= len(m.store.Boards) {
+		return
+	}
+	m.col = 0
+	m.colScroll = 0
+	m.cardSel = nil
+	m.cardScroll = nil
+	m.openBoard(next, m.returnToMenu)
+}
+
+func (m *model) moveKey(key string) {
+	n := 0
+	if b := m.curBoard(); b != nil {
+		n = len(b.Columns)
+	}
+	switch key {
+	case "q", "esc":
+		m.pop()
+	case "k":
+		if m.moveSel > 0 {
+			m.moveSel--
+		}
+	case "j":
+		if m.moveSel < n-1 {
+			m.moveSel++
+		}
+	case "g":
+		m.moveSel = 0
+	case "G":
+		if n > 0 {
+			m.moveSel = n - 1
+		}
+	case "enter":
+		dst := m.moveSel
+		m.pop()
+		m.sendCard(dst)
+	}
+}
+
+func (m *model) sendCard(dst int) {
+	ci := m.cardIndex(m.col)
+	if ci < 0 || dst == m.col {
+		return
+	}
+	src := m.col
+	moved, err := m.store.MoveCardTo(m.board, src, ci, dst)
+	if err != nil {
+		m.notice = err.Error()
+		return
+	}
+	if !moved {
+		return
+	}
+	m.col = dst
+	m.growCardSel()
+	if m.store.CardAtBottom {
+		m.cardSel[dst] = len(m.curBoard().Columns[dst].Cards) - 1
+	} else {
+		m.cardSel[dst] = 0
+	}
+}
+
+func (m *model) clearDone() {
+	ci := m.cardIndex(m.col)
+	if ci < 0 {
+		return
+	}
+	card := m.curBoard().Columns[m.col].Cards[ci]
+	kept := make([]store.ChecklistItem, 0, len(card.Checklist))
+	for _, item := range card.Checklist {
+		if !item.Done {
+			kept = append(kept, item)
+		}
+	}
+	if len(kept) == len(card.Checklist) {
+		m.notice = "no finished items"
+		return
+	}
+	card.Checklist = kept
+	if err := m.store.UpdateCard(m.board, m.col, ci, card); err != nil {
+		m.notice = err.Error()
+	}
+}
+
+func (m *model) remember() {
+	if !m.seenBoard {
+		return
+	}
+	b := m.curBoard()
+	if b == nil {
+		return
+	}
+	col := m.col
+	if col < 0 {
+		col = 0
+	}
+	card := 0
+	if col < len(m.cardSel) {
+		card = m.cardSel[col]
+	}
+	_ = store.SavePlace(m.store.Path, store.Place{Board: b.Name, Col: col, Card: card})
+}
+
 func (m *model) shiftCard(dir int) {
 	ci := m.cardIndex(m.col)
 	if ci < 0 {
@@ -1043,11 +1187,11 @@ func (m *model) pinMenu(window int) {
 }
 
 func (m *model) header() string {
-	title := " kabmat "
+	title := "kabmat"
 	if m.screen == screenBoard && m.curBoard() != nil {
-		title = " " + m.curBoard().Name + " "
+		title = m.curBoard().Name
 	}
-	return barStyle.Width(m.width).Render(title)
+	return barStyle.Width(m.width).Render(" " + fit(title, max(1, m.width-2)))
 }
 
 func (m *model) footer() string {
@@ -1098,15 +1242,44 @@ func (m *model) menuBody(h int) string {
 		lines = append(lines, mutedStyle.Render("c to create a new board"))
 	} else {
 		for i := m.menuScroll; i < len(m.store.Boards) && i < m.menuScroll+window; i++ {
-			name := fit(m.store.Boards[i].Name, textW)
+			row := boardRow(m.store.Boards[i], textW)
 			if i == m.menuSel {
-				name = selStyle.Width(textW).Render(name)
+				row = selStyle.Width(textW).Render(row)
 			}
-			lines = append(lines, name)
+			lines = append(lines, row)
 		}
 	}
 	box := boxOnStyle.Width(innerW).Height(innerH).Render(" Boards \n" + strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit("j/k select   J/K reorder   enter open", textW)))
 	return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
+}
+
+func boardMeta(b store.Board) string {
+	cards := 0
+	for i := range b.Columns {
+		cards += len(b.Columns[i].Cards)
+	}
+	return unit(len(b.Columns), "col", "cols") + "  " + unit(cards, "card", "cards")
+}
+
+func unit(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+func boardRow(b store.Board, width int) string {
+	meta := boardMeta(b)
+	metaW := lipgloss.Width(meta)
+	if metaW+4 > width {
+		return fit(b.Name, width)
+	}
+	name := fit(b.Name, width-metaW-1)
+	gap := width - lipgloss.Width(name) - metaW
+	if gap < 1 {
+		gap = 1
+	}
+	return name + strings.Repeat(" ", gap) + meta
 }
 
 func (m *model) boardBody(h int) string {
@@ -1205,9 +1378,39 @@ func (m *model) dialog() string {
 		return m.subListDialog()
 	case layerSubtask:
 		return m.subDialog()
+	case layerMove:
+		return m.moveDialog()
 	default:
 		return ""
 	}
+}
+
+func (m *model) moveDialog() string {
+	b := m.curBoard()
+	if b == nil {
+		return ""
+	}
+	w := max(24, min(48, m.width*2/5))
+	textW := max(8, w-4)
+	room := max(1, min(len(b.Columns), m.height-8))
+	off := 0
+	if m.moveSel >= room {
+		off = m.moveSel - room + 1
+	}
+	var lines []string
+	for i := off; i < len(b.Columns) && i < off+room; i++ {
+		row := b.Columns[i].Title
+		if i == m.col {
+			row += " ·"
+		}
+		row = fit(row, textW)
+		if i == m.moveSel {
+			row = selStyle.Width(textW).Render(row)
+		}
+		lines = append(lines, row)
+	}
+	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render("enter move   q cancel")
+	return panelBox(" Move to ", body, w, room+4, true)
 }
 
 func (m *model) helpDialog() string {
@@ -1396,6 +1599,11 @@ func cardLines(card store.Card, width int, selected, fold bool) []string {
 		title = selStyle.Width(width).Render(title)
 	}
 	lines := []string{title}
+	if selected {
+		if preview := firstLine(card.Description); preview != "" {
+			lines = append(lines, mutedStyle.Render(fit(preview, width)))
+		}
+	}
 	if fold && !selected && len(card.Subtasks) > 0 {
 		lines = append(lines, fit(fmt.Sprintf("  %d subtasks", len(card.Subtasks)), width))
 		return lines
@@ -1408,6 +1616,13 @@ func cardLines(card store.Card, width int, selected, fold bool) []string {
 		lines = append(lines, fit(mark+sub.Content, width))
 	}
 	return lines
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 func cardMatches(card *store.Card, term string) bool {
@@ -1571,9 +1786,12 @@ var helpLines = []string{
 	"  q                     back",
 	"  ?                     help",
 	"  h/l                   column",
+	"  [ ]                   previous/next board",
 	"  j/k                   card",
 	"  g/G                   first/last card",
 	"  H/L                   move card across",
+	"  m                     move card to a column",
+	"  X                     clear finished checklist items",
 	"  K/J, shift+up/down    move focused card up/down",
 	"  ctrl+h/ctrl+p         move column left",
 	"  ctrl+l/ctrl+n         move column right",
@@ -1592,6 +1810,12 @@ var helpLines = []string{
 	"  /                     search title, description, checklist, subtasks",
 	"  n/N                   next/previous match",
 	"  5j, 3L, ...           count prefix for movement keys",
+	"",
+	"Move to column",
+	"  j/k                   select",
+	"  g/G                   first/last",
+	"  enter                 move the card",
+	"  q/esc                 cancel",
 	"",
 	"Card info (fills the screen)",
 	"  tab                   switch content/description",
