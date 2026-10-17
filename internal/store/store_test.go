@@ -112,3 +112,35 @@ func TestMoveCardAcross(t *testing.T) {
 		t.Fatalf("reload: %v %+v", err, again)
 	}
 }
+
+func TestUndoRedo(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddColumn(0, "Todo"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Undo(); !ok || err != nil || len(s.Boards[0].Columns) != 0 {
+		t.Fatalf("undo 1: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.Undo(); !ok || err != nil || len(s.Boards) != 0 {
+		t.Fatalf("undo 2: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := s.Undo(); ok {
+		t.Fatal("undo past the beginning should do nothing")
+	}
+	if ok, _ := s.Redo(); !ok {
+		t.Fatal("redo 1")
+	}
+	if ok, _ := s.Redo(); !ok || len(s.Boards[0].Columns) != 1 {
+		t.Fatal("redo 2")
+	}
+	if ok, _ := s.Redo(); ok {
+		t.Fatal("redo past the end should do nothing")
+	}
+}

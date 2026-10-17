@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"kabmat/internal/store"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"kabmat/internal/store"
 )
 
 type screen int
@@ -38,7 +39,15 @@ const (
 	inputRenameColumn
 	inputNewItem
 	inputEditItem
+	inputSearch
 )
+
+var repeatable = map[string]bool{
+	"j": true, "k": true, "h": true, "l": true,
+	"J": true, "K": true,
+	"shift+up": true, "shift+down": true,
+	"ctrl+h": true, "ctrl+l": true, "ctrl+p": true, "ctrl+n": true,
+}
 
 type confirmKind int
 
@@ -95,6 +104,8 @@ type model struct {
 	checkSel    int
 	subSel      int
 	sub         subEdit
+	count       int
+	search      string
 }
 
 func Run(s *store.Store, open string) error {
@@ -159,11 +170,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case layerCard:
 			m.cardKey(msg.String(), msg.Runes)
 		default:
-			if m.screen == screenMenu {
-				m.menuKey(msg.String())
-			} else {
-				m.boardKey(msg.String())
-			}
+			m.normalKey(msg.String())
 		}
 	}
 	if m.quitting {
@@ -197,6 +204,10 @@ func (m *model) menuKey(key string) {
 	switch key {
 	case "q":
 		m.quitting = true
+	case "u":
+		m.undoRedo(false)
+	case "ctrl+r":
+		m.undoRedo(true)
 	case "?":
 		m.helpOff = 0
 		m.push(layerHelp)
@@ -236,6 +247,7 @@ func (m *model) menuKey(key string) {
 			m.col = 0
 			m.colScroll = 0
 			m.cardSel = nil
+			m.cardScroll = nil
 			m.screen = screenBoard
 			m.returnToMenu = true
 		}
@@ -256,6 +268,17 @@ func (m *model) boardKey(key string) {
 			return
 		}
 		m.quitting = true
+	case "u":
+		m.undoRedo(false)
+	case "ctrl+r":
+		m.undoRedo(true)
+	case "/":
+		m.openInput(inputSearch, " Search Cards ", "")
+		m.prompt.insert = true
+	case "n":
+		m.findNext(1, false)
+	case "N":
+		m.findNext(-1, false)
 	case "?":
 		m.helpOff = 0
 		m.push(layerHelp)
@@ -359,6 +382,11 @@ func (m *model) inputKey(key string, runes []rune) {
 		if err == nil {
 			m.menuSel = len(m.store.Boards) - 1
 		}
+	case inputSearch:
+		if term := strings.TrimSpace(value); term != "" {
+			m.search = term
+			m.findNext(1, true)
+		}
 	case inputRenameBoard:
 		err = m.store.RenameBoard(m.menuSel, value)
 	case inputNewColumn:
@@ -408,6 +436,14 @@ func (m *model) applyConfirm() {
 		}
 	case confirmDeleteColumn:
 		err = m.store.DeleteColumn(m.board, m.col)
+		if err == nil {
+			if m.col < len(m.cardSel) {
+				m.cardSel = append(m.cardSel[:m.col], m.cardSel[m.col+1:]...)
+			}
+			if m.col < len(m.cardScroll) {
+				m.cardScroll = append(m.cardScroll[:m.col], m.cardScroll[m.col+1:]...)
+			}
+		}
 		if b := m.curBoard(); b != nil && m.col >= len(b.Columns) && m.col > 0 {
 			m.col--
 		}
@@ -893,10 +929,12 @@ func (m *model) header() string {
 func (m *model) footer() string {
 	hint := "q quit   j/k select   J/K reorder   c new   enter open   ? help"
 	if m.screen == screenBoard {
-		hint = "q back   j/k focus   J/K move card   e edit   s subtasks   ? help"
+		hint = "q back   j/k focus   J/K move card   e edit   s subtasks   / search   u undo  ? help"
 	}
 	if m.notice != "" {
 		hint = m.notice
+	} else if m.count > 0 {
+		hint = fmt.Sprintf("count: %d", m.count)
 	}
 	mode := ""
 	editing := m.top() == layerInput || m.top() == layerCard || m.top() == layerSubtask
@@ -910,6 +948,9 @@ func (m *model) footer() string {
 	}
 	if mode != "" {
 		mode = modeStyle.Render(mode)
+	}
+	if p := m.position(); p != "" {
+		mode = p + mode
 	}
 	pad := m.width - lipgloss.Width(hint) - lipgloss.Width(mode)
 	if pad < 1 {
@@ -1322,6 +1363,7 @@ var helpLines = []string{
 	"  r/e                   rename",
 	"  d                     delete",
 	"  enter                 open",
+	"  u / ctrl+r            undo / redo",
 	"",
 	"Input, normal",
 	"  h/l                   move",
@@ -1358,6 +1400,10 @@ var helpLines = []string{
 	"  e/enter               edit card",
 	"  s                     subtasks",
 	"  d                     delete card",
+	"  u / ctrl+r            undo / redo",
+	"  /                     search cards",
+	"  n/N                   next/previous match",
+	"  5j, 3L, ...           count prefix for movement keys",
 	"",
 	"Card info (fills the screen)",
 	"  tab                   switch content/description",
@@ -1392,4 +1438,119 @@ var helpLines = []string{
 	"  space                 toggle",
 	"  d                     delete",
 	"  q                     save and return to the board",
+}
+
+func (m *model) normalKey(key string) {
+	if len(key) == 1 && (key[0] >= '1' && key[0] <= '9' || key[0] == '0' && m.count > 0) {
+		m.count = min(m.count*10+int(key[0]-'0'), 999)
+		return
+	}
+	n := 1
+	if repeatable[key] && m.count > 0 {
+		n = m.count
+	}
+	m.count = 0
+	for i := 0; i < n; i++ {
+		if m.screen == screenMenu {
+			m.menuKey(key)
+		} else {
+			m.boardKey(key)
+		}
+		if m.top() != layerNone || m.quitting {
+			break
+		}
+	}
+}
+
+func (m *model) undoRedo(redo bool) {
+	var ok bool
+	var err error
+	word := "undo"
+	if redo {
+		word = "redo"
+		ok, err = m.store.Redo()
+	} else {
+		ok, err = m.store.Undo()
+	}
+	switch {
+	case err != nil:
+		m.notice = err.Error()
+	case !ok:
+		m.notice = "nothing to " + word
+	default:
+		m.notice = word + " done"
+		if m.screen == screenBoard && m.curBoard() == nil {
+			m.screen = screenMenu
+		}
+	}
+}
+
+func (m *model) findNext(dir int, fromCurrent bool) {
+	b := m.curBoard()
+	if b == nil || m.search == "" {
+		return
+	}
+	if m.search == "" {
+		m.notice = "no search term, press / first"
+		return
+	}
+
+	type pos struct{ c, i int }
+	var all []pos
+	cur := -1
+	curCard := m.cardIndex(m.col)
+	for c, col := range b.Columns {
+		for i := range col.Cards {
+			if c == m.col && i == curCard {
+				cur = len(all)
+			}
+			all = append(all, pos{c, i})
+		}
+	}
+
+	n := len(all)
+	if n == 0 {
+		m.notice = "no cards to search"
+		return
+	}
+
+	start := 1
+	if cur < 0 {
+		if dir > 0 {
+			cur = -1
+		} else {
+			cur = 0
+		}
+	} else if fromCurrent {
+		start = 0
+	}
+
+	needle := strings.ToLower(m.search)
+	for step := start; step <= n; step++ {
+		p := all[((cur+dir*step)%n+n)%n]
+		card := b.Columns[p.c].Cards[p.i]
+		hay := strings.ToLower(card.Content + " " + card.Description)
+		if strings.Contains(hay, needle) {
+			m.col = p.c
+			m.growCardSel()
+			m.cardSel[p.c] = p.i
+			return
+		}
+	}
+	m.notice = "no match for " + m.search
+}
+
+func (m *model) position() string {
+	if m.screen != screenBoard {
+		return ""
+	}
+	b := m.curBoard()
+	if b == nil || len(b.Columns) == 0 {
+		return ""
+	}
+	s := fmt.Sprintf("col %d/%d", m.col+1, len(b.Columns))
+	if ci := m.cardIndex(m.col); ci >= 0 {
+		s += fmt.Sprintf("  card %d/%d", ci+1, len(b.Columns[m.col].Cards))
+	}
+	return s + " "
 }

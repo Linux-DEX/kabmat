@@ -47,19 +47,29 @@ type Board struct {
 	Columns []Column
 }
 
+const maxUndo = 100
+
 type Store struct {
 	Path         string
 	Backup       string
 	Boards       []Board
 	CardAtBottom bool
+
+	committed string
+	undo      []string
+	redo      []string
 }
 
 func Paths() (string, string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", "", err
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", "", err
+		}
+		base = filepath.Join(home, ".local", "share")
 	}
-	dir := filepath.Join(home, ".local", "share", "kabmat")
+	dir := filepath.Join(base, "kabmat")
 	return filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"), nil
 }
 
@@ -70,7 +80,7 @@ func Load(path, backup string) (*Store, error) {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("couldn't read data from file %q: %w", path, err)
 		}
-		if err := s.save(); err != nil {
+		if err := s.write(""); err != nil {
 			return nil, err
 		}
 		return s, nil
@@ -80,6 +90,7 @@ func Load(path, backup string) (*Store, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	s.Boards = boards
+	s.committed = encode(boards)
 	return s, nil
 }
 
@@ -249,20 +260,6 @@ func encode(boards []Board) string {
 	return b.String()
 }
 
-func (s *Store) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
-		return err
-	}
-	if cur, err := os.ReadFile(s.Path); err == nil {
-		if err := os.WriteFile(s.Backup, cur, 0o600); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	return os.WriteFile(s.Path, []byte(encode(s.Boards)), 0o600)
-}
-
 func (s *Store) Index(name string) (int, error) {
 	for i := range s.Boards {
 		if s.Boards[i].Name == name {
@@ -401,4 +398,78 @@ func (s *Store) MoveCardHoriz(bi, src, cardi, dir int) (bool, error) {
 		cols[dst].Cards = append([]Card{card}, cols[dst].Cards...)
 	}
 	return true, s.save()
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".kabmat-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+func (s *Store) write(data string) error {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+		return err
+	}
+	if cur, err := os.ReadFile(s.Path); err == nil {
+		if err := writeFileAtomic(s.Backup, cur, 0o600); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return writeFileAtomic(s.Path, []byte(data), 0o600)
+}
+
+// save is called by every mutator. The previous committed state goes on the
+// undo stack, so no mutator needs to change.
+func (s *Store) save() error {
+	cur := encode(s.Boards)
+	if cur != s.committed {
+		s.undo = append(s.undo, s.committed)
+		if len(s.undo) > maxUndo {
+			s.undo = s.undo[1:]
+		}
+		s.redo = nil
+		s.committed = cur
+	}
+	return s.write(cur)
+}
+
+func (s *Store) Undo() (bool, error) { return s.step(&s.undo, &s.redo) }
+func (s *Store) Redo() (bool, error) { return s.step(&s.redo, &s.undo) }
+
+func (s *Store) step(from, to *[]string) (bool, error) {
+	if len(*from) == 0 {
+		return false, nil
+	}
+	last := len(*from) - 1
+	target := (*from)[last]
+	boards, err := parse(target)
+	if err != nil {
+		return false, err
+	}
+	*from = (*from)[:last]
+	*to = append(*to, s.committed)
+	s.Boards = boards
+	s.committed = target
+	return true, s.write(target)
 }
