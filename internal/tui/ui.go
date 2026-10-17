@@ -39,12 +39,11 @@ const (
 	inputRenameColumn
 	inputNewItem
 	inputEditItem
-	inputSearch
 )
 
 var repeatable = map[string]bool{
 	"j": true, "k": true, "h": true, "l": true,
-	"J": true, "K": true,
+	"J": true, "K": true, "n": true, "N": true,
 	"shift+up": true, "shift+down": true,
 	"ctrl+h": true, "ctrl+l": true, "ctrl+p": true, "ctrl+n": true,
 }
@@ -106,6 +105,11 @@ type model struct {
 	sub         subEdit
 	count       int
 	search      string
+	searching   bool
+	searchBuf   field
+	searchMiss  bool
+	searchCol   int
+	searchSel   []int
 }
 
 func Run(s *store.Store, open string) error {
@@ -154,6 +158,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.notice = ""
+		if m.searching {
+			m.searchKey(msg.String(), msg.Runes)
+			break
+		}
 		switch m.top() {
 		case layerHelp:
 			m.helpKey(msg.String())
@@ -273,12 +281,11 @@ func (m *model) boardKey(key string) {
 	case "ctrl+r":
 		m.undoRedo(true)
 	case "/":
-		m.openInput(inputSearch, " Search Cards ", "")
-		m.prompt.insert = true
+		m.startSearch()
 	case "n":
-		m.findNext(1, false)
+		m.findNext(1)
 	case "N":
-		m.findNext(-1, false)
+		m.findNext(-1)
 	case "?":
 		m.helpOff = 0
 		m.push(layerHelp)
@@ -381,11 +388,6 @@ func (m *model) inputKey(key string, runes []rune) {
 		err = m.store.CreateBoard(value)
 		if err == nil {
 			m.menuSel = len(m.store.Boards) - 1
-		}
-	case inputSearch:
-		if term := strings.TrimSpace(value); term != "" {
-			m.search = term
-			m.findNext(1, true)
 		}
 	case inputRenameBoard:
 		err = m.store.RenameBoard(m.menuSel, value)
@@ -927,6 +929,9 @@ func (m *model) header() string {
 }
 
 func (m *model) footer() string {
+	if m.searching {
+		return m.searchBar()
+	}
 	hint := "q quit   j/k select   J/K reorder   c new   enter open   ? help"
 	if m.screen == screenBoard {
 		hint = "q back   j/k focus   J/K move card   e edit   s subtasks   / search   u undo  ? help"
@@ -1401,7 +1406,7 @@ var helpLines = []string{
 	"  s                     subtasks",
 	"  d                     delete card",
 	"  u / ctrl+r            undo / redo",
-	"  /                     search cards",
+	"  /                     search (enter/esc)",
 	"  n/N                   next/previous match",
 	"  5j, 3L, ...           count prefix for movement keys",
 	"",
@@ -1485,61 +1490,6 @@ func (m *model) undoRedo(redo bool) {
 	}
 }
 
-func (m *model) findNext(dir int, fromCurrent bool) {
-	b := m.curBoard()
-	if b == nil || m.search == "" {
-		return
-	}
-	if m.search == "" {
-		m.notice = "no search term, press / first"
-		return
-	}
-
-	type pos struct{ c, i int }
-	var all []pos
-	cur := -1
-	curCard := m.cardIndex(m.col)
-	for c, col := range b.Columns {
-		for i := range col.Cards {
-			if c == m.col && i == curCard {
-				cur = len(all)
-			}
-			all = append(all, pos{c, i})
-		}
-	}
-
-	n := len(all)
-	if n == 0 {
-		m.notice = "no cards to search"
-		return
-	}
-
-	start := 1
-	if cur < 0 {
-		if dir > 0 {
-			cur = -1
-		} else {
-			cur = 0
-		}
-	} else if fromCurrent {
-		start = 0
-	}
-
-	needle := strings.ToLower(m.search)
-	for step := start; step <= n; step++ {
-		p := all[((cur+dir*step)%n+n)%n]
-		card := b.Columns[p.c].Cards[p.i]
-		hay := strings.ToLower(card.Content + " " + card.Description)
-		if strings.Contains(hay, needle) {
-			m.col = p.c
-			m.growCardSel()
-			m.cardSel[p.c] = p.i
-			return
-		}
-	}
-	m.notice = "no match for " + m.search
-}
-
 func (m *model) position() string {
 	if m.screen != screenBoard {
 		return ""
@@ -1553,4 +1503,162 @@ func (m *model) position() string {
 		s += fmt.Sprintf("  card %d/%d", ci+1, len(b.Columns[m.col].Cards))
 	}
 	return s + " "
+}
+
+func (m *model) startSearch() {
+	m.count = 0
+	m.searching = true
+	m.searchMiss = false
+	m.searchBuf = newField("", false)
+	m.searchBuf.insert = true
+	m.searchCol = m.col
+	m.cardIndex(m.col) // normalizes cardSel/cardScroll
+	m.searchSel = append(m.searchSel[:0], m.cardSel...)
+}
+
+func (m *model) restoreSearchStart() {
+	m.col = m.searchCol
+	m.growCardSel()
+	copy(m.cardSel, m.searchSel)
+}
+
+func (m *model) searchKey(key string, runes []rune) {
+	switch key {
+	case "esc":
+		m.searching = false
+		m.restoreSearchStart()
+		return
+	case "enter":
+		m.searching = false
+		term := m.searchBuf.value()
+		if term == "" {
+			m.restoreSearchStart()
+			m.findNext(1)
+			return
+		}
+		m.search = term
+		if m.searchMiss {
+			m.restoreSearchStart()
+			m.notice = "pattern not found: " + term
+		}
+		return
+	case "ctrl+u":
+		m.searchBuf = newField("", false)
+		m.searchBuf.insert = true
+	case "backspace", "delete":
+		if m.searchBuf.value() == "" {
+			m.searching = false
+			m.restoreSearchStart()
+			return
+		}
+		m.searchBuf.handle(key, runes)
+	default:
+		before := m.searchBuf.value()
+		m.searchBuf.handle(key, runes)
+		if m.searchBuf.value() == before {
+			return
+		}
+	}
+	m.incSearch()
+}
+
+// incSearch re-runs the search from where the prompt was opened.
+func (m *model) incSearch() {
+	m.restoreSearchStart()
+	m.searchMiss = false
+	term := m.searchBuf.value()
+	if term == "" {
+		return
+	}
+	m.searchMiss = !m.findFrom(term, m.searchCol, m.cardIndex(m.searchCol), 1, true)
+}
+
+// findNext repeats the last confirmed search (n / N).
+func (m *model) findNext(dir int) {
+	if m.curBoard() == nil {
+		return
+	}
+	if m.search == "" {
+		m.notice = "no search term, press / first"
+		return
+	}
+	if !m.findFrom(m.search, m.col, m.cardIndex(m.col), dir, false) {
+		m.notice = "pattern not found: " + m.search
+	}
+}
+
+// findFrom looks for term starting at card (c0, i0), wrapping around the
+// board. It focuses the match and reports whether one was found.
+// includeStart lets the starting card itself match.
+func (m *model) findFrom(term string, c0, i0, dir int, includeStart bool) bool {
+	b := m.curBoard()
+	if b == nil || term == "" {
+		return false
+	}
+	total, cur := 0, -1
+	for c := range b.Columns {
+		if c == c0 && i0 >= 0 {
+			cur = total + i0
+		}
+		total += len(b.Columns[c].Cards)
+	}
+	if total == 0 {
+		return false
+	}
+
+	start := 1
+	if cur < 0 {
+		if dir < 0 {
+			cur = 0
+		}
+	} else if includeStart {
+		start = 0
+	}
+
+	fold := term == strings.ToLower(term) // smart-case
+	match := func(card *store.Card) bool {
+		if fold {
+			return strings.Contains(strings.ToLower(card.Content), term) ||
+				strings.Contains(strings.ToLower(card.Description), term)
+		}
+		return strings.Contains(card.Content, term) ||
+			strings.Contains(card.Description, term)
+	}
+	at := func(lin int) (int, int) {
+		for c := range b.Columns {
+			n := len(b.Columns[c].Cards)
+			if lin < n {
+				return c, lin
+			}
+			lin -= n
+		}
+		return 0, 0
+	}
+
+	for k := start; k <= total; k++ {
+		c, i := at(((cur+dir*k)%total + total) % total)
+		if match(&b.Columns[c].Cards[i]) {
+			m.col = c
+			m.growCardSel()
+			m.cardSel[c] = i
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) searchBar() string {
+	text := []rune(m.searchBuf.value())
+	right := ""
+	if m.searchMiss {
+		right = " pattern not found "
+	}
+	room := max(1, m.width-lipgloss.Width(right)-2)
+	if len(text) > room {
+		text = text[len(text)-room:]
+	}
+	left := "/" + string(text)
+	pad := max(0, m.width-lipgloss.Width(left)-1-lipgloss.Width(right))
+	return barStyle.Render(left) + modeStyle.Render(" ") +
+		barStyle.Render(strings.Repeat(" ", pad)+right)
 }
