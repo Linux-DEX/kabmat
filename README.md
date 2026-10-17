@@ -35,7 +35,7 @@ Press `?` inside the TUI for the full key list.
 | --- | --- |
 | `j` / `k` | move the highlight |
 | `g` / `G` | first / last board |
-| `J` / `K` | reorder the highlighted board |
+| `K` / `J` | move the highlighted board up / down |
 | `c` | create a board |
 | `r`, `e` | rename |
 | `d` | delete |
@@ -50,18 +50,23 @@ Press `?` inside the TUI for the full key list.
 | `j` / `k` | focus the card above / below |
 | `g` / `G` | first / last card |
 | `H` / `L` | move the card to the left / right column |
-| `K` / `J` | move the card up / down |
+| `K` / `J` | move the focused card up / down |
 | `Ctrl-h`, `Ctrl-p` | move the column left |
 | `Ctrl-l`, `Ctrl-n` | move the column right |
 | `C` / `E` / `D` | create / rename / delete a column |
-| `c` / `e` / `d` | create / edit / delete a card |
+| `c` / `e`, `Enter` / `d` | create / edit / delete a card |
+| `s` | open subtasks for the focused card |
 | `q` | back |
 
 ### Editing
 
 Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter` saves, `Esc` or `q` cancels.
 
-On a card, `Tab` switches between the title and the description. `c` opens the checklist once the title is set. In the checklist, `Space` toggles an item, `c` adds one, `e` edits it, and `d` deletes it.
+Card info fills the screen. `Tab` switches between the summary and the description. `Enter` saves and returns to the board. `q` leaves without saving.
+
+`c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `q` on either list saves and returns to the board. A subtask has its own summary and a tall description field.
+
+`J` and `K` reorder boards on the board list. On a board they move the focused card. `Shift+Up` and `Shift+Down` do the same reorder.
 
 ## Data
 
@@ -73,6 +78,9 @@ board name
   card
    -open checklist item
    +done checklist item
+   >-open subtask
+   >> subtask description
+   >+done subtask
     description line
     another description line
 ```

@@ -161,6 +161,9 @@ func (f *field) backspace() {
 }
 
 func (f field) render(width int) string {
+	if width < 1 {
+		width = 1
+	}
 	cur := lipgloss.NewStyle().Reverse(true)
 	var out []string
 	for i, line := range f.lines {
@@ -169,16 +172,24 @@ func (f field) render(width int) string {
 			out = append(out, fit(line, width))
 			continue
 		}
+		start := 0
+		if f.col >= width {
+			start = f.col - width + 1
+		}
+		end := min(len(r), start+width)
 		var b strings.Builder
-		if f.col < len(r) {
-			b.WriteString(string(r[:f.col]))
+		if f.col > start {
+			b.WriteString(string(r[start:min(f.col, end)]))
+		}
+		if f.col < len(r) && f.col >= start && f.col < start+width {
 			b.WriteString(cur.Render(string(r[f.col])))
-			b.WriteString(string(r[f.col+1:]))
+			if f.col+1 < end {
+				b.WriteString(string(r[f.col+1 : end]))
+			}
 		} else {
-			b.WriteString(string(r))
 			b.WriteString(cur.Render(" "))
 		}
-		out = append(out, fit(b.String(), width+8))
+		out = append(out, b.String())
 	}
 	if len(out) == 0 {
 		return cur.Render(" ")

@@ -42,6 +42,34 @@ func TestParseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSubtaskRoundTrip(t *testing.T) {
+	const raw = "Work\n" +
+		" Todo\n" +
+		"  parent\n" +
+		"   -check\n" +
+		"   >-child\n" +
+		"   >> notes\n" +
+		"   >+done child\n" +
+		"    parent desc\n"
+	boards, err := parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := boards[0].Columns[0].Cards[0]
+	if card.Content != "parent" || card.Description != "parent desc" || len(card.Checklist) != 1 {
+		t.Fatalf("card: %+v", card)
+	}
+	if len(card.Subtasks) != 2 || card.Subtasks[0].Content != "child" || card.Subtasks[0].Done || card.Subtasks[0].Description != "notes" {
+		t.Fatalf("subtasks: %+v", card.Subtasks)
+	}
+	if !card.Subtasks[1].Done || card.Subtasks[1].Content != "done child" {
+		t.Fatalf("done subtask: %+v", card.Subtasks[1])
+	}
+	if got := encode(boards); got != raw {
+		t.Fatalf("encode\n%s", got)
+	}
+}
+
 func TestMoveCardAcross(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))

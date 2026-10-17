@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	indentColumn = " "
-	indentCard   = "  "
-	indentCheck  = "   "
-	indentDesc   = "    "
+	indentColumn  = " "
+	indentCard    = "  "
+	indentCheck   = "   "
+	indentSub     = "   >"
+	indentSubDesc = "   >>"
+	indentDesc    = "    "
 )
 
 var errEmptyName = errors.New("name is empty")
@@ -22,10 +24,17 @@ type ChecklistItem struct {
 	Done    bool
 }
 
+type Subtask struct {
+	Content     string
+	Description string
+	Done        bool
+}
+
 type Card struct {
 	Content     string
 	Description string
 	Checklist   []ChecklistItem
+	Subtasks    []Subtask
 }
 
 type Column struct {
@@ -84,6 +93,23 @@ func parse(data string) ([]Board, error) {
 	for i, line := range strings.Split(data, "\n") {
 		n := i + 1
 		switch {
+		case strings.HasPrefix(line, indentSubDesc):
+			if !readingCard || len(lastCard(boards).Subtasks) == 0 {
+				return nil, fmt.Errorf("[line %d] reading a subtask description without a subtask", n)
+			}
+			text := strings.TrimPrefix(line[len(indentSubDesc):], " ")
+			sub := lastSub(boards)
+			sub.Description += text + "\n"
+		case strings.HasPrefix(line, indentSub):
+			if !readingCard {
+				return nil, fmt.Errorf("[line %d] reading a subtask without a card", n)
+			}
+			sub, err := parseSub(line[len(indentSub):])
+			if err != nil {
+				return nil, fmt.Errorf("[line %d] %w", n, err)
+			}
+			card := lastCard(boards)
+			card.Subtasks = append(card.Subtasks, sub)
 		case strings.HasPrefix(line, indentDesc):
 			if !readingCard {
 				return nil, fmt.Errorf("[line %d] reading a description without a card", n)
@@ -128,9 +154,11 @@ func parse(data string) ([]Board, error) {
 	for i := range boards {
 		for j := range boards[i].Columns {
 			for k := range boards[i].Columns[j].Cards {
-				boards[i].Columns[j].Cards[k].Description = strings.TrimSuffix(
-					boards[i].Columns[j].Cards[k].Description, "\n",
-				)
+				card := &boards[i].Columns[j].Cards[k]
+				card.Description = strings.TrimSuffix(card.Description, "\n")
+				for s := range card.Subtasks {
+					card.Subtasks[s].Description = strings.TrimSuffix(card.Subtasks[s].Description, "\n")
+				}
 			}
 		}
 	}
@@ -146,6 +174,19 @@ func parseCheck(raw string) (ChecklistItem, error) {
 		return ChecklistItem{}, fmt.Errorf("checklist item %q must start with + or -", rest)
 	}
 	return ChecklistItem{Done: rest[0] == '+', Content: rest[1:]}, nil
+}
+
+func parseSub(raw string) (Subtask, error) {
+	rest := strings.TrimSpace(raw)
+	if rest == "" || (rest[0] != '+' && rest[0] != '-') {
+		return Subtask{}, fmt.Errorf("subtask %q must start with + or -", rest)
+	}
+	return Subtask{Done: rest[0] == '+', Content: strings.TrimSpace(rest[1:])}, nil
+}
+
+func lastSub(boards []Board) *Subtask {
+	card := lastCard(boards)
+	return &card.Subtasks[len(card.Subtasks)-1]
 }
 
 func lastCard(boards []Board) *Card {
@@ -180,6 +221,22 @@ func encode(boards []Board) string {
 					b.WriteString(mark)
 					b.WriteString(item.Content)
 					b.WriteByte('\n')
+				}
+				for _, sub := range card.Subtasks {
+					mark := "-"
+					if sub.Done {
+						mark = "+"
+					}
+					b.WriteString(indentSub)
+					b.WriteString(mark)
+					b.WriteString(sub.Content)
+					b.WriteByte('\n')
+					if sub.Description != "" {
+						b.WriteString(indentSubDesc)
+						b.WriteByte(' ')
+						b.WriteString(strings.ReplaceAll(sub.Description, "\n", "\n"+indentSubDesc+" "))
+						b.WriteByte('\n')
+					}
 				}
 				if card.Description != "" {
 					b.WriteString(indentDesc)

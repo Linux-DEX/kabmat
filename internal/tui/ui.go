@@ -25,6 +25,8 @@ const (
 	layerConfirm
 	layerCard
 	layerChecklist
+	layerSubtasks
+	layerSubtask
 )
 
 type inputKind int
@@ -54,6 +56,15 @@ type cardEdit struct {
 	desc      field
 	focus     int
 	checklist []store.ChecklistItem
+	subtasks  []store.Subtask
+}
+
+type subEdit struct {
+	index   int
+	content field
+	desc    field
+	focus   int
+	done    bool
 }
 
 type model struct {
@@ -71,6 +82,7 @@ type model struct {
 	col        int
 	colScroll  int
 	cardSel    []int
+	cardScroll []int
 
 	stack       []layer
 	helpOff     int
@@ -81,6 +93,8 @@ type model struct {
 	confirmKind confirmKind
 	edit        cardEdit
 	checkSel    int
+	subSel      int
+	sub         subEdit
 }
 
 func Run(s *store.Store, open string) error {
@@ -138,6 +152,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.confirmKey(msg.String())
 		case layerChecklist:
 			m.checkKey(msg.String())
+		case layerSubtasks:
+			m.subListKey(msg.String())
+		case layerSubtask:
+			m.subKey(msg.String(), msg.Runes)
 		case layerCard:
 			m.cardKey(msg.String(), msg.Runes)
 		default:
@@ -196,18 +214,10 @@ func (m *model) menuKey(key string) {
 		if n > 0 {
 			m.menuSel = n - 1
 		}
-	case "K":
-		if moved, err := m.store.MoveBoard(m.menuSel, -1); err != nil {
-			m.notice = err.Error()
-		} else if moved {
-			m.menuSel--
-		}
-	case "J":
-		if moved, err := m.store.MoveBoard(m.menuSel, 1); err != nil {
-			m.notice = err.Error()
-		} else if moved {
-			m.menuSel++
-		}
+	case "K", "shift+up":
+		m.reorderBoard(-1)
+	case "J", "shift+down":
+		m.reorderBoard(1)
 	case "c":
 		m.openInput(inputNewBoard, " New Board Name ", "")
 	case "r", "e":
@@ -275,9 +285,9 @@ func (m *model) boardKey(key string) {
 		m.shiftCard(-1)
 	case "L":
 		m.shiftCard(1)
-	case "K":
+	case "K", "shift+up":
 		m.swapCard(-1)
-	case "J":
+	case "J", "shift+down":
 		m.swapCard(1)
 	case "ctrl+h", "ctrl+p":
 		m.shiftColumn(-1)
@@ -300,18 +310,11 @@ func (m *model) boardKey(key string) {
 			m.edit = cardEdit{isNew: true, col: m.col, card: -1, content: newField("", false), desc: newField("", true)}
 			m.push(layerCard)
 		}
-	case "e":
-		ci := m.cardIndex(m.col)
-		if ci >= 0 {
-			card := b.Columns[m.col].Cards[ci]
-			m.edit = cardEdit{
-				col:       m.col,
-				card:      ci,
-				content:   newField(card.Content, false),
-				desc:      newField(card.Description, true),
-				checklist: cloneItems(card.Checklist),
-			}
-			m.push(layerCard)
+	case "e", "enter":
+		m.openCard()
+	case "s":
+		if m.openCard() {
+			m.push(layerSubtasks)
 		}
 	case "d":
 		ci := m.cardIndex(m.col)
@@ -451,9 +454,40 @@ func (m *model) cardKey(key string, runes []rune) {
 			return
 		}
 		f.handle(key, runes)
+	case "s":
+		if !f.insert && strings.TrimSpace(m.edit.content.value()) != "" {
+			if len(m.edit.subtasks) == 0 {
+				m.subSel = 0
+			}
+			m.push(layerSubtasks)
+			return
+		}
+		f.handle(key, runes)
 	default:
 		f.handle(key, runes)
 	}
+}
+
+func (m *model) openCard() bool {
+	b := m.curBoard()
+	if b == nil || m.col >= len(b.Columns) {
+		return false
+	}
+	ci := m.cardIndex(m.col)
+	if ci < 0 {
+		return false
+	}
+	card := b.Columns[m.col].Cards[ci]
+	m.edit = cardEdit{
+		col:       m.col,
+		card:      ci,
+		content:   newField(card.Content, false),
+		desc:      newField(card.Description, true),
+		checklist: cloneItems(card.Checklist),
+		subtasks:  cloneSubs(card.Subtasks),
+	}
+	m.push(layerCard)
+	return true
 }
 
 func (m *model) submitCard() {
@@ -461,6 +495,7 @@ func (m *model) submitCard() {
 		Content:     m.edit.content.value(),
 		Description: strings.TrimRight(m.edit.desc.value(), "\n"),
 		Checklist:   m.edit.checklist,
+		Subtasks:    m.edit.subtasks,
 	}
 	var err error
 	if m.edit.isNew {
@@ -481,11 +516,22 @@ func (m *model) submitCard() {
 	m.pop()
 }
 
+func (m *model) leaveSubtasks() {
+	before := len(m.stack)
+	m.submitCard()
+	if len(m.stack) == before {
+		return
+	}
+	for m.top() == layerCard || m.top() == layerSubtasks || m.top() == layerSubtask {
+		m.pop()
+	}
+}
+
 func (m *model) checkKey(key string) {
 	n := len(m.edit.checklist)
 	switch key {
 	case "q":
-		m.pop()
+		m.leaveSubtasks()
 	case "k":
 		if m.checkSel > 0 {
 			m.checkSel--
@@ -500,9 +546,9 @@ func (m *model) checkKey(key string) {
 		if n > 0 {
 			m.checkSel = n - 1
 		}
-	case "K":
+	case "K", "shift+up":
 		m.checkSel = moveItem(m.edit.checklist, m.checkSel, -1)
-	case "J":
+	case "J", "shift+down":
 		m.checkSel = moveItem(m.edit.checklist, m.checkSel, 1)
 	case "c":
 		m.openInput(inputNewItem, " New Item ", "")
@@ -522,6 +568,123 @@ func (m *model) checkKey(key string) {
 			}
 		}
 	}
+}
+
+func (m *model) subListKey(key string) {
+	n := len(m.edit.subtasks)
+	switch key {
+	case "q":
+		m.leaveSubtasks()
+	case "k":
+		if m.subSel > 0 {
+			m.subSel--
+		}
+	case "j":
+		if m.subSel < n-1 {
+			m.subSel++
+		}
+	case "g":
+		m.subSel = 0
+	case "G":
+		if n > 0 {
+			m.subSel = n - 1
+		}
+	case "K", "shift+up":
+		m.subSel = moveSub(m.edit.subtasks, m.subSel, -1)
+	case "J", "shift+down":
+		m.subSel = moveSub(m.edit.subtasks, m.subSel, 1)
+	case "c":
+		m.openSubtask(-1)
+	case "e", "enter":
+		if n > 0 {
+			m.openSubtask(m.subSel)
+		}
+	case " ", "space":
+		if n > 0 {
+			m.edit.subtasks[m.subSel].Done = !m.edit.subtasks[m.subSel].Done
+		}
+	case "d":
+		if n > 0 {
+			m.edit.subtasks = append(m.edit.subtasks[:m.subSel], m.edit.subtasks[m.subSel+1:]...)
+			if m.subSel >= len(m.edit.subtasks) && m.subSel > 0 {
+				m.subSel--
+			}
+		}
+	}
+}
+
+func (m *model) openSubtask(index int) {
+	var sub store.Subtask
+	if index >= 0 {
+		sub = m.edit.subtasks[index]
+	}
+	m.sub = subEdit{
+		index:   index,
+		content: newField(sub.Content, false),
+		desc:    newField(sub.Description, true),
+		done:    sub.Done,
+	}
+	m.push(layerSubtask)
+}
+
+func (m *model) subKey(key string, runes []rune) {
+	f := m.subField()
+	switch key {
+	case "esc":
+		if f.insert {
+			f.handle("esc", nil)
+			return
+		}
+		m.pop()
+	case "q":
+		if f.insert {
+			f.handle("", []rune{'q'})
+			return
+		}
+		m.pop()
+	case "enter":
+		if m.sub.focus == 0 || !f.insert {
+			m.saveSubtask()
+			return
+		}
+		f.handle("enter", nil)
+	case "tab":
+		m.sub.focus ^= 1
+	case " ", "space":
+		if !f.insert {
+			m.sub.done = !m.sub.done
+			return
+		}
+		f.handle(key, runes)
+	default:
+		f.handle(key, runes)
+	}
+}
+
+func (m *model) saveSubtask() {
+	sub := store.Subtask{
+		Content:     strings.TrimSpace(m.sub.content.value()),
+		Description: strings.TrimRight(m.sub.desc.value(), "\n"),
+		Done:        m.sub.done,
+	}
+	if sub.Content == "" {
+		m.notice = "subtask title can't be empty"
+		return
+	}
+	if m.sub.index < 0 {
+		m.edit.subtasks = append(m.edit.subtasks, sub)
+		m.subSel = len(m.edit.subtasks) - 1
+	} else {
+		m.edit.subtasks[m.sub.index] = sub
+	}
+	m.pop()
+}
+
+func (m *model) subField() *field {
+	if m.sub.focus == 0 {
+		return &m.sub.content
+	}
+	return &m.sub.desc
 }
 
 func (m *model) shiftCard(dir int) {
@@ -549,6 +712,20 @@ func (m *model) swapCard(dir int) {
 	}
 }
 
+func (m *model) reorderBoard(dir int) {
+	if len(m.store.Boards) == 0 {
+		return
+	}
+	moved, err := m.store.MoveBoard(m.menuSel, dir)
+	if err != nil {
+		m.notice = err.Error()
+		return
+	}
+	if moved {
+		m.menuSel += dir
+	}
+}
+
 func (m *model) shiftColumn(dir int) {
 	if m.curBoard() == nil || len(m.curBoard().Columns) == 0 {
 		return
@@ -562,6 +739,7 @@ func (m *model) shiftColumn(dir int) {
 		j := m.col + dir
 		m.growCardSel()
 		m.cardSel[m.col], m.cardSel[j] = m.cardSel[j], m.cardSel[m.col]
+		m.cardScroll[m.col], m.cardScroll[j] = m.cardScroll[j], m.cardScroll[m.col]
 		m.col = j
 	}
 }
@@ -620,12 +798,16 @@ func (m *model) growCardSel() {
 	if b := m.curBoard(); b != nil {
 		n = len(b.Columns)
 	}
-	if len(m.cardSel) == n {
-		return
+	if len(m.cardSel) != n {
+		next := make([]int, n)
+		copy(next, m.cardSel)
+		m.cardSel = next
 	}
-	next := make([]int, n)
-	copy(next, m.cardSel)
-	m.cardSel = next
+	if len(m.cardScroll) != n {
+		next := make([]int, n)
+		copy(next, m.cardScroll)
+		m.cardScroll = next
+	}
 }
 
 func (m *model) cardIndex(ci int) int {
@@ -709,17 +891,21 @@ func (m *model) header() string {
 }
 
 func (m *model) footer() string {
-	hint := "q quit   ? help   j/k move   c new   enter open"
+	hint := "q quit   j/k select   J/K reorder   c new   enter open   ? help"
 	if m.screen == screenBoard {
-		hint = "q back   ? help   hjkl focus   HJKL move   c card   C column"
+		hint = "q back   j/k focus   J/K move card   e edit   s subtasks   ? help"
 	}
 	if m.notice != "" {
 		hint = m.notice
 	}
 	mode := ""
-	if m.top() == layerInput && m.prompt.insert || m.top() == layerCard && m.activeField().insert {
+	editing := m.top() == layerInput || m.top() == layerCard || m.top() == layerSubtask
+	inserting := m.top() == layerInput && m.prompt.insert ||
+		m.top() == layerCard && m.activeField().insert ||
+		m.top() == layerSubtask && m.subField().insert
+	if inserting {
 		mode = " INSERT "
-	} else if m.top() == layerInput || m.top() == layerCard {
+	} else if editing {
 		mode = " NORMAL "
 	}
 	if mode != "" {
@@ -734,23 +920,24 @@ func (m *model) footer() string {
 }
 
 func (m *model) menuBody(h int) string {
-	innerW := max(20, min(32, m.width/3))
-	innerH := max(4, min(h-2, max(6, m.height/3)))
-	window := innerH - 2
+	innerW := max(36, min(64, m.width-8))
+	textW := max(8, innerW-2)
+	innerH := max(8, h-2)
+	window := max(1, innerH-2)
 	m.pinMenu(window)
 	var lines []string
 	if len(m.store.Boards) == 0 {
 		lines = append(lines, mutedStyle.Render("c to create a new board"))
 	} else {
 		for i := m.menuScroll; i < len(m.store.Boards) && i < m.menuScroll+window; i++ {
-			name := fit(m.store.Boards[i].Name, innerW)
+			name := fit(m.store.Boards[i].Name, textW)
 			if i == m.menuSel {
-				name = selStyle.Width(innerW).Render(fit(m.store.Boards[i].Name, innerW))
+				name = selStyle.Width(textW).Render(name)
 			}
 			lines = append(lines, name)
 		}
 	}
-	box := boxOnStyle.Width(innerW).Height(innerH).Render(strings.Join(lines, "\n"))
+	box := boxOnStyle.Width(innerW).Height(innerH).Render(" Boards \n" + strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit("j/k select   J/K reorder   enter open", textW)))
 	return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
 }
 
@@ -784,20 +971,19 @@ func (m *model) columnBox(ci, w, h int) string {
 		sel = m.cardIndex(ci)
 	}
 	start := 0
-	if sel >= cardRoom {
-		start = sel - cardRoom + 1
-	}
-	lines := []string{titleStyle.Render(fit(col.Title, innerW))}
+	textW := max(1, innerW-2)
+	lines := []string{titleStyle.Render(fit(col.Title, textW))}
 	if len(col.Cards) == 0 {
 		lines = append(lines, mutedStyle.Render("c new card"))
 	}
+	start = m.cardWindow(ci, cardRoom, textW)
 	for i := start; i < len(col.Cards) && len(lines) <= cardRoom; i++ {
-		label := cardLabel(col.Cards[i])
-		text := fit(label, innerW)
-		if i == sel {
-			text = selStyle.Width(innerW).Render(text)
+		for _, line := range cardLines(col.Cards[i], textW, i == sel) {
+			if len(lines) > cardRoom {
+				break
+			}
+			lines = append(lines, line)
 		}
-		lines = append(lines, text)
 	}
 	st := boxStyle
 	if ci == m.col {
@@ -818,21 +1004,26 @@ func (m *model) dialog() string {
 		return m.cardDialog()
 	case layerChecklist:
 		return m.checkDialog()
+	case layerSubtasks:
+		return m.subListDialog()
+	case layerSubtask:
+		return m.subDialog()
 	default:
 		return ""
 	}
 }
 
 func (m *model) helpDialog() string {
-	h := max(6, m.height/2)
-	w := max(24, min(72, m.width*3/5))
-	end := min(len(helpLines), m.helpOff+h-3)
+	h := max(14, m.height-2)
+	w := max(48, min(92, m.width-2))
+	textW := max(20, w-6)
+	end := min(len(helpLines), m.helpOff+h-4)
 	var lines []string
 	for _, line := range helpLines[m.helpOff:end] {
-		lines = append(lines, fit(line, w))
+		lines = append(lines, fit(line, textW))
 	}
-	body := strings.Join(lines, "\n")
-	return boxOnStyle.Width(w).Height(h).Render(" Help \n" + body + "\n" + mutedStyle.Render("j/k scroll    q close"))
+	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render("j/k scroll    q close")
+	return panelBox(" Help ", body, w, h, true)
 }
 
 func (m *model) inputDialog() string {
@@ -840,32 +1031,136 @@ func (m *model) inputDialog() string {
 	return boxOnStyle.Width(w).Render(m.promptTitle + "\n" + m.prompt.render(w) + "\n" + mutedStyle.Render("i insert   enter save   esc cancel"))
 }
 
-func (m *model) cardDialog() string {
-	w := max(28, min(64, m.width/2))
-	contentLabel := " Content "
-	descLabel := " Description "
-	if m.edit.focus == 0 {
-		contentLabel = selStyle.Render(contentLabel)
-	} else {
-		descLabel = selStyle.Render(descLabel)
+func (m *model) cardWindow(ci, room, textW int) int {
+	b := m.curBoard()
+	if b == nil || ci < 0 || ci >= len(b.Columns) || room < 1 {
+		return 0
 	}
+	cards := b.Columns[ci].Cards
+	sel := m.cardIndex(ci)
+	if sel < 0 || len(cards) == 0 {
+		return 0
+	}
+	m.growCardSel()
+	if m.cardScroll[ci] > sel {
+		m.cardScroll[ci] = sel
+	}
+	used := 0
+	for i := m.cardScroll[ci]; i <= sel && i < len(cards); i++ {
+		used += max(1, len(cardLines(cards[i], textW, false)))
+	}
+	for used > room && m.cardScroll[ci] < sel {
+		used -= max(1, len(cardLines(cards[m.cardScroll[ci]], textW, false)))
+		m.cardScroll[ci]++
+	}
+	return m.cardScroll[ci]
+}
+
+func (m *model) cardDialog() string {
+	totalW := max(48, m.width-2)
+	totalH := max(18, m.height-1)
+	textW := max(20, totalW-8)
+	summaryH := 5
+	descH := max(8, totalH-summaryH-6)
+	content := panelBox(" Content ", m.edit.content.render(max(1, textW-4)), textW, summaryH, m.edit.focus == 0)
+	desc := panelBox(" Description ", m.edit.desc.render(max(1, textW-4)), textW, descH, m.edit.focus == 1)
 	mode := "NORMAL"
 	if m.activeField().insert {
 		mode = "INSERT"
 	}
-	body := strings.Join([]string{
-		" Card ",
-		contentLabel,
-		m.edit.content.render(w),
-		descLabel,
-		m.edit.desc.render(w),
-		mutedStyle.Render(mode + "   tab switch   c checklist   enter save   esc cancel"),
-	}, "\n")
-	return boxOnStyle.Width(w).Render(body)
+	hint := mode + "   tab field   i insert   c checklist   s subtasks   enter save   q board"
+	if m.notice != "" {
+		hint = m.notice
+	}
+	return panelBox(" Card Info ", content+"\n"+desc+"\n"+mutedStyle.Render(fit(hint, textW)), totalW, totalH, true)
+}
+
+func (m *model) subDialog() string {
+	totalW := max(48, m.width-2)
+	totalH := max(18, m.height-1)
+	textW := max(20, totalW-8)
+	summaryH := 5
+	descH := max(8, totalH-summaryH-6)
+	content := panelBox(" Summary ", m.sub.content.render(max(1, textW-4)), textW, summaryH, m.sub.focus == 0)
+	desc := panelBox(" Description ", m.sub.desc.render(max(1, textW-4)), textW, descH, m.sub.focus == 1)
+	state := "open"
+	if m.sub.done {
+		state = "done"
+	}
+	mode := "NORMAL"
+	if m.subField().insert {
+		mode = "INSERT"
+	}
+	hint := mode + "   tab field   space marks " + state + "   enter save   esc cancel"
+	if m.notice != "" {
+		hint = m.notice
+	}
+	title := " Subtask "
+	if parent := strings.TrimSpace(m.edit.content.value()); parent != "" {
+		title = " Subtask · " + parent + " "
+	}
+	return panelBox(title, content+"\n"+desc+"\n"+mutedStyle.Render(fit(hint, textW)), totalW, totalH, true)
+}
+
+func (m *model) subListDialog() string {
+	totalW := max(48, m.width-2)
+	totalH := max(16, m.height-1)
+	textW := max(20, totalW-6)
+	var lines []string
+	parent := strings.TrimSpace(m.edit.content.value())
+	if parent == "" {
+		parent = "card"
+	}
+	open, done := 0, 0
+	for _, sub := range m.edit.subtasks {
+		if sub.Done {
+			done++
+		} else {
+			open++
+		}
+	}
+	lines = append(lines, mutedStyle.Render(fit(fmt.Sprintf("%s    %d open    %d done", parent, open, done), textW)))
+	lines = append(lines, "")
+	if len(m.edit.subtasks) == 0 {
+		lines = append(lines, mutedStyle.Render("c to add a subtask"))
+	}
+	for i, sub := range m.edit.subtasks {
+		mark := "[ ] "
+		state := "OPEN"
+		title := sub.Content
+		if sub.Done {
+			mark = "[x] "
+			state = "DONE"
+			title = doneStyle.Render(sub.Content)
+		}
+		row := fmt.Sprintf("%2d  %s%s", i+1, mark, title)
+		gap := textW - lipgloss.Width(row) - len(state)
+		if gap < 1 {
+			row = fit(fmt.Sprintf("%2d  %s%s", i+1, mark, sub.Content), textW-len(state)-1)
+			gap = 1
+		}
+		row += strings.Repeat(" ", gap) + state
+		if i == m.subSel {
+			row = selStyle.Width(textW).Render(fit(fmt.Sprintf("%2d  %s%s", i+1, mark, sub.Content), textW))
+		}
+		lines = append(lines, row)
+		preview := strings.TrimSpace(sub.Description)
+		if i := strings.IndexByte(preview, '\n'); i >= 0 {
+			preview = preview[:i]
+		}
+		if preview != "" && i != m.subSel {
+			lines = append(lines, mutedStyle.Render(fit("      "+preview, textW)))
+		}
+	}
+	hint := "j/k select   J/K reorder   g/G ends   c new   e edit   space done   d delete   q board"
+	body := strings.Join(lines, "\n") + "\n\n" + mutedStyle.Render(fit(hint, textW))
+	return panelBox(" Subtasks ", body, totalW, totalH, true)
 }
 
 func (m *model) checkDialog() string {
-	w := max(24, min(40, m.width/3))
+	totalW := max(48, min(m.width-4, m.width*3/4))
+	totalH := max(14, m.height*2/3)
+	textW := max(16, totalW-6)
 	var lines []string
 	if len(m.edit.checklist) == 0 {
 		lines = append(lines, mutedStyle.Render("c to add an item"))
@@ -877,29 +1172,86 @@ func (m *model) checkDialog() string {
 			mark = "[x] "
 			text = doneStyle.Render(item.Content)
 		}
-		row := mark + text
+		row := fit(mark+text, textW)
 		if i == m.checkSel {
-			row = selStyle.Width(w).Render(fit(mark+item.Content, w))
-		} else {
-			row = fit(row, w)
+			row = selStyle.Width(textW).Render(fit(mark+item.Content, textW))
 		}
 		lines = append(lines, row)
 	}
-	body := " Checklist \n" + strings.Join(lines, "\n") + "\n" + mutedStyle.Render("space toggle   c add   e edit   d delete   q close")
-	return boxOnStyle.Width(w).Render(body)
+	hint := mutedStyle.Render(fit("j/k select   J/K reorder   g/G ends   c add   e edit   space toggle   d delete   q board", textW))
+	return panelBox(" Checklist ", strings.Join(lines, "\n")+"\n\n"+hint, totalW, totalH, true)
 }
 
 func cardLabel(card store.Card) string {
-	if len(card.Checklist) == 0 {
-		return card.Content
-	}
-	done := 0
-	for _, item := range card.Checklist {
-		if item.Done {
-			done++
+	label := card.Content
+	if n := len(card.Checklist); n > 0 {
+		done := 0
+		for _, item := range card.Checklist {
+			if item.Done {
+				done++
+			}
 		}
+		label += fmt.Sprintf(" %d/%d", done, n)
 	}
-	return fmt.Sprintf("%s %d/%d", card.Content, done, len(card.Checklist))
+	return label
+}
+
+func cardLines(card store.Card, width int, selected bool) []string {
+	title := fit(cardLabel(card), width)
+	if selected {
+		title = selStyle.Width(width).Render(title)
+	}
+	lines := []string{title}
+	for _, sub := range card.Subtasks {
+		mark := "  ▸ "
+		if sub.Done {
+			mark = "  ✓ "
+		}
+		lines = append(lines, fit(mark+sub.Content, width))
+	}
+	return lines
+}
+
+func panelBox(title, body string, totalW, totalH int, on bool) string {
+	st := boxStyle
+	if on {
+		st = boxOnStyle
+	}
+	contentW := max(10, totalW-2)
+	contentH := max(3, totalH-2)
+	textW := max(1, contentW-2)
+	lines := []string{fit(title, textW)}
+	for _, line := range strings.Split(body, "\n") {
+		if len(lines) >= contentH {
+			break
+		}
+		lines = append(lines, clampLine(line, textW))
+	}
+	for len(lines) < contentH {
+		lines = append(lines, "")
+	}
+	return st.Width(contentW).Height(contentH).Render(strings.Join(lines, "\n"))
+}
+
+func panel(title, body string, total int, on bool) string {
+	st := boxStyle
+	if on {
+		st = boxOnStyle
+	}
+	contentW := max(8, total-2)
+	textW := max(1, contentW-2)
+	lines := []string{fit(title, textW)}
+	for _, line := range strings.Split(body, "\n") {
+		lines = append(lines, clampLine(line, textW))
+	}
+	return st.Width(contentW).Render(strings.Join(lines, "\n"))
+}
+
+func clampLine(line string, n int) string {
+	if lipgloss.Width(line) <= n {
+		return line
+	}
+	return fit(line, n)
 }
 
 func cloneItems(in []store.ChecklistItem) []store.ChecklistItem {
@@ -909,6 +1261,24 @@ func cloneItems(in []store.ChecklistItem) []store.ChecklistItem {
 	out := make([]store.ChecklistItem, len(in))
 	copy(out, in)
 	return out
+}
+
+func cloneSubs(in []store.Subtask) []store.Subtask {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]store.Subtask, len(in))
+	copy(out, in)
+	return out
+}
+
+func moveSub(items []store.Subtask, i, dir int) int {
+	j := i + dir
+	if i < 0 || j < 0 || i >= len(items) || j >= len(items) {
+		return i
+	}
+	items[i], items[j] = items[j], items[i]
+	return j
 }
 
 func moveItem(items []store.ChecklistItem, i, dir int) int {
@@ -945,8 +1315,8 @@ var helpLines = []string{
 	"Main menu",
 	"q quit    ? help",
 	"j/k move highlight    g/G first/last",
-	"J/K move board    c create    r/e rename",
-	"d delete    enter open",
+	"K/J or shift+up/down reorder the highlighted board",
+	"c create    r/e rename    d delete    enter open",
 	"",
 	"Input, normal: h/l move, 0/$ ends, i/a/I/A insert",
 	"S clear line, d delete line, enter save, esc/q cancel",
@@ -957,17 +1327,20 @@ var helpLines = []string{
 	"Board",
 	"q back    ? help    h/l column    j/k card",
 	"g/G first/last card    H/L move card across",
-	"K/J move card up/down",
+	"K/J or shift+up/down move the focused card up/down",
 	"ctrl+h/ctrl+p move column left",
 	"ctrl+l/ctrl+n move column right",
 	"C new column    E rename    D delete column",
-	"c new card    e edit    d delete card",
+	"c new card    e or enter edit    s subtasks    d delete card",
 	"",
-	"Card: tab switches content/description",
-	"enter saves in normal mode (and content insert)",
-	"description insert enter adds a line",
-	"c opens the checklist when content is set",
+	"Card info fills the screen: tab switches content/description",
+	"i insert    enter save    q returns to the board",
+	"c checklist    s subtasks",
 	"",
-	"Checklist: j/k g/G move, J/K reorder",
-	"c add    e edit    space toggle    d delete    q close",
+	"Subtasks: j/k select    J/K reorder    g/G first/last",
+	"c new    e or enter edit    space done    d delete    q save and return to the board",
+	"Subtask edit: tab fields    space done    enter save    esc cancel",
+	"",
+	"Checklist: j/k select    J/K reorder    g/G first/last",
+	"c add    e edit    space toggle    d delete    q save and return to the board",
 }
