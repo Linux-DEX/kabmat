@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"kabmat/internal/store"
+	"github.com/Linux-DEX/kabmat/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

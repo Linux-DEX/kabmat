@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"kabmat/internal/store"
+	"github.com/Linux-DEX/kabmat/internal/store"
 )
 
 func TestApplyArgs(t *testing.T) {

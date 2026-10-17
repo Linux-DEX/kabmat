@@ -5,8 +5,8 @@ import (
 	"io"
 	"os"
 
-	"kabmat/internal/store"
-	"kabmat/internal/tui"
+	"github.com/Linux-DEX/kabmat/internal/store"
+	"github.com/Linux-DEX/kabmat/internal/tui"
 )
 
 const version = "0.1.0"

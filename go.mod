@@ -1,4 +1,4 @@
-module kabmat
+module github.com/Linux-DEX/kabmat
 
 go 1.27
 

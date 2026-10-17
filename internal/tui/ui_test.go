@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"kabmat/internal/store"
+	"github.com/Linux-DEX/kabmat/internal/store"
 )
 
 func TestBoardFlow(t *testing.T) {
