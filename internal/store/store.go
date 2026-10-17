@@ -58,6 +58,8 @@ type Store struct {
 	committed string
 	undo      []string
 	redo      []string
+	dirty     bool
+	backedUp  bool // data_bkp is written on the first Flush of the session
 }
 
 func Paths() (string, string, error) {
@@ -350,12 +352,21 @@ func (s *Store) MoveColumn(bi, ci, dir int) (bool, error) {
 }
 
 func (s *Store) AddCard(bi, ci int, card Card) error {
+	return s.InsertCard(bi, ci, len(s.Boards[bi].Columns[ci].Cards), card)
+}
+
+func (s *Store) InsertCard(bi, ci, at int, card Card) error {
 	card.Content = strings.TrimSpace(card.Content)
 	if card.Content == "" {
 		return errEmptyName
 	}
 	col := &s.Boards[bi].Columns[ci]
-	col.Cards = append(col.Cards, card)
+	if at < 0 || at > len(col.Cards) {
+		at = len(col.Cards)
+	}
+	col.Cards = append(col.Cards, Card{})
+	copy(col.Cards[at+1:], col.Cards[at:])
+	col.Cards[at] = card
 	return s.save()
 }
 
@@ -429,18 +440,22 @@ func (s *Store) write(data string) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return err
 	}
-	if cur, err := os.ReadFile(s.Path); err == nil {
-		if err := writeFileAtomic(s.Backup, cur, 0o600); err != nil {
+	if !s.backedUp {
+		if cur, err := os.ReadFile(s.Path); err == nil {
+			if len(cur) > 0 {
+				if err := writeFileAtomic(s.Backup, cur, 0o600); err != nil {
+					return err
+				}
+			}
+		} else if !os.IsNotExist(err) {
 			return err
 		}
-	} else if !os.IsNotExist(err) {
-		return err
+		s.backedUp = true
 	}
 	return writeFileAtomic(s.Path, []byte(data), 0o600)
 }
 
-// save is called by every mutator. The previous committed state goes on the
-// undo stack, so no mutator needs to change.
+// save records the undo snapshot and marks the store dirty. Flush writes the file.
 func (s *Store) save() error {
 	cur := encode(s.Boards)
 	if cur != s.committed {
@@ -450,8 +465,21 @@ func (s *Store) save() error {
 		}
 		s.redo = nil
 		s.committed = cur
+		s.dirty = true
 	}
-	return s.write(cur)
+	return nil
+}
+
+// Flush writes the committed state once. Repeated calls are a no-op until the next edit.
+func (s *Store) Flush() error {
+	if !s.dirty {
+		return nil
+	}
+	if err := s.write(s.committed); err != nil {
+		return err
+	}
+	s.dirty = false
+	return nil
 }
 
 func (s *Store) Undo() (bool, error) { return s.step(&s.undo, &s.redo) }
@@ -471,5 +499,6 @@ func (s *Store) step(from, to *[]string) (bool, error) {
 	*to = append(*to, s.committed)
 	s.Boards = boards
 	s.committed = target
-	return true, s.write(target)
+	s.dirty = true
+	return true, nil
 }

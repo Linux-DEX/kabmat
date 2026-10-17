@@ -43,7 +43,7 @@ const (
 
 var repeatable = map[string]bool{
 	"j": true, "k": true, "h": true, "l": true,
-	"J": true, "K": true, "n": true, "N": true,
+	"J": true, "K": true, "n": true, "N": true, "p": true,
 	"shift+up": true, "shift+down": true,
 	"ctrl+h": true, "ctrl+l": true, "ctrl+p": true, "ctrl+n": true,
 }
@@ -104,6 +104,10 @@ type model struct {
 	subSel      int
 	sub         subEdit
 	count       int
+	clip        store.Card
+	hasClip     bool
+	filtering   bool
+	foldSubs    bool
 	search      string
 	searching   bool
 	searchBuf   field
@@ -127,6 +131,7 @@ func newModel(s *store.Store, open string) (*model, error) {
 		width:        80,
 		height:       24,
 		returnToMenu: true,
+		foldSubs:     true,
 	}
 	if open == "" {
 		return m, nil
@@ -180,6 +185,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.normalKey(msg.String())
 		}
+	}
+	if err := m.store.Flush(); err != nil {
+		m.quitting = false
+		m.notice = err.Error()
+		return m, nil
 	}
 	if m.quitting {
 		return m, tea.Quit
@@ -302,14 +312,14 @@ func (m *model) boardKey(key string) {
 	case "j":
 		m.moveCardFocus(1)
 	case "g":
-		if n > 0 {
+		if ids := m.shownIDs(m.col); len(ids) > 0 {
 			m.growCardSel()
-			m.cardSel[m.col] = 0
+			m.cardSel[m.col] = ids[0]
 		}
 	case "G":
-		if n > 0 && len(b.Columns[m.col].Cards) > 0 {
+		if ids := m.shownIDs(m.col); len(ids) > 0 {
 			m.growCardSel()
-			m.cardSel[m.col] = len(b.Columns[m.col].Cards) - 1
+			m.cardSel[m.col] = ids[len(ids)-1]
 		}
 	case "H":
 		m.shiftCard(-1)
@@ -353,6 +363,16 @@ func (m *model) boardKey(key string) {
 			m.confirmMsg = fmt.Sprintf("Delete card %q?", shortName(b.Columns[m.col].Cards[ci].Content))
 			m.push(layerConfirm)
 		}
+	case "y":
+		m.yankCard()
+	case "p":
+		m.pasteCard()
+	case "Y":
+		m.duplicateCard()
+	case "f":
+		m.toggleFilter()
+	case "z":
+		m.foldSubs = !m.foldSubs
 	}
 }
 
@@ -783,16 +803,118 @@ func (m *model) shiftColumn(dir int) {
 }
 
 func (m *model) moveCardFocus(dir int) {
+	ids := m.shownIDs(m.col)
+	if len(ids) == 0 {
+		return
+	}
+	cur := m.cardIndex(m.col)
+	pos := 0
+	for i, id := range ids {
+		if id == cur {
+			pos = i
+			break
+		}
+	}
+	next := pos + dir
+	if next < 0 || next >= len(ids) {
+		return
+	}
+	m.cardSel[m.col] = ids[next]
+}
+
+func (m *model) yankCard() {
 	ci := m.cardIndex(m.col)
 	if ci < 0 {
 		return
 	}
-	next := ci + dir
-	n := len(m.curBoard().Columns[m.col].Cards)
-	if next < 0 || next >= n {
+	m.clip = cloneCard(m.curBoard().Columns[m.col].Cards[ci])
+	m.hasClip = true
+	m.notice = "yanked"
+}
+
+func (m *model) pasteCard() {
+	if !m.hasClip {
+		m.notice = "nothing to paste"
 		return
 	}
-	m.cardSel[m.col] = next
+	b := m.curBoard()
+	if b == nil || len(b.Columns) == 0 {
+		m.notice = "no column"
+		return
+	}
+	at := len(b.Columns[m.col].Cards)
+	if ci := m.cardIndex(m.col); ci >= 0 {
+		at = ci + 1
+	}
+	m.notice = ""
+	if err := m.store.InsertCard(m.board, m.col, at, cloneCard(m.clip)); err != nil {
+		m.notice = err.Error()
+		return
+	}
+	m.growCardSel()
+	m.cardSel[m.col] = at
+}
+
+func (m *model) duplicateCard() {
+	m.yankCard()
+	if !m.hasClip {
+		return
+	}
+	m.pasteCard()
+	if m.notice == "" {
+		m.notice = "duplicated"
+	}
+}
+
+func (m *model) toggleFilter() {
+	if m.search == "" {
+		m.notice = "no search term, press / first"
+		return
+	}
+	m.filtering = !m.filtering
+	if m.filtering {
+		m.snapShown()
+	}
+}
+
+func (m *model) snapShown() {
+	ids := m.shownIDs(m.col)
+	if len(ids) == 0 {
+		return
+	}
+	cur := m.cardIndex(m.col)
+	best := ids[0]
+	for _, id := range ids {
+		if id >= cur {
+			best = id
+			break
+		}
+		best = id
+	}
+	m.growCardSel()
+	m.cardSel[m.col] = best
+}
+
+func (m *model) shownIDs(ci int) []int {
+	b := m.curBoard()
+	if b == nil || ci < 0 || ci >= len(b.Columns) {
+		return nil
+	}
+	cards := b.Columns[ci].Cards
+	filter := m.filtering && m.search != ""
+	ids := make([]int, 0, len(cards))
+	for i := range cards {
+		if !filter || cardMatches(&cards[i], m.search) {
+			ids = append(ids, i)
+		}
+	}
+	return ids
+}
+
+func cloneCard(c store.Card) store.Card {
+	c.Checklist = cloneItems(c.Checklist)
+	c.Subtasks = cloneSubs(c.Subtasks)
+	return c
 }
 
 func (m *model) openInput(kind inputKind, title, value string) {
@@ -934,7 +1056,7 @@ func (m *model) footer() string {
 	}
 	hint := "q quit   j/k select   J/K reorder   c new   enter open   ? help"
 	if m.screen == screenBoard {
-		hint = "q back   j/k focus   J/K move card   e edit   s subtasks   / search   u undo  ? help"
+		hint = "q back   j/k focus   y/p yank/paste   / search   f filter   z fold   ? help"
 	}
 	if m.notice != "" {
 		hint = m.notice
@@ -1012,19 +1134,48 @@ func (m *model) columnBox(ci, w, h int) string {
 	innerW := max(4, w-4)
 	innerH := max(2, h-2)
 	cardRoom := max(1, innerH-1)
+	textW := max(1, innerW-2)
+	if ci == m.col && m.filtering && m.search != "" {
+		m.snapShown()
+	}
+	focus := m.cardIndex(ci)
 	sel := -1
 	if ci == m.col {
-		sel = m.cardIndex(ci)
+		sel = focus
 	}
-	start := 0
-	textW := max(1, innerW-2)
-	lines := []string{titleStyle.Render(fit(col.Title, textW))}
-	if len(col.Cards) == 0 {
-		lines = append(lines, mutedStyle.Render("c new card"))
+	ids := m.shownIDs(ci)
+	blocks := make([][]string, len(ids))
+	ensure := func(i int) []string {
+		if blocks[i] == nil {
+			id := ids[i]
+			blocks[i] = cardLines(col.Cards[id], textW, id == sel, m.foldSubs)
+		}
+		return blocks[i]
 	}
-	start = m.cardWindow(ci, cardRoom, textW)
-	for i := start; i < len(col.Cards) && len(lines) <= cardRoom; i++ {
-		for _, line := range cardLines(col.Cards[i], textW, i == sel) {
+	selPos := -1
+	for i, id := range ids {
+		if id == focus {
+			selPos = i
+			break
+		}
+	}
+	start := m.scrollShown(ci, len(ids), selPos, cardRoom, func(i int) int {
+		return len(ensure(i))
+	})
+	title := fmt.Sprintf("%s %d", col.Title, len(col.Cards))
+	if m.filtering && m.search != "" {
+		title = fmt.Sprintf("%s %d/%d", col.Title, len(ids), len(col.Cards))
+	}
+	lines := []string{titleStyle.Render(fit(title, textW))}
+	if len(ids) == 0 {
+		msg := "c new card"
+		if len(col.Cards) > 0 {
+			msg = "no matches"
+		}
+		lines = append(lines, mutedStyle.Render(msg))
+	}
+	for i := start; i < len(ids) && len(lines) <= cardRoom; i++ {
+		for _, line := range ensure(i) {
 			if len(lines) > cardRoom {
 				break
 			}
@@ -1077,26 +1228,23 @@ func (m *model) inputDialog() string {
 	return boxOnStyle.Width(w).Render(m.promptTitle + "\n" + m.prompt.render(w) + "\n" + mutedStyle.Render("i insert   enter save   esc cancel"))
 }
 
-func (m *model) cardWindow(ci, room, textW int) int {
-	b := m.curBoard()
-	if b == nil || ci < 0 || ci >= len(b.Columns) || room < 1 {
-		return 0
-	}
-	cards := b.Columns[ci].Cards
-	sel := m.cardIndex(ci)
-	if sel < 0 || len(cards) == 0 {
+func (m *model) scrollShown(ci, n, selPos, room int, count func(int) int) int {
+	if selPos < 0 || n == 0 || room < 1 {
 		return 0
 	}
 	m.growCardSel()
-	if m.cardScroll[ci] > sel {
-		m.cardScroll[ci] = sel
+	if m.cardScroll[ci] > selPos {
+		m.cardScroll[ci] = selPos
+	}
+	if m.cardScroll[ci] < 0 {
+		m.cardScroll[ci] = 0
 	}
 	used := 0
-	for i := m.cardScroll[ci]; i <= sel && i < len(cards); i++ {
-		used += max(1, len(cardLines(cards[i], textW, false)))
+	for i := m.cardScroll[ci]; i <= selPos && i < n; i++ {
+		used += max(1, count(i))
 	}
-	for used > room && m.cardScroll[ci] < sel {
-		used -= max(1, len(cardLines(cards[m.cardScroll[ci]], textW, false)))
+	for used > room && m.cardScroll[ci] < selPos {
+		used -= max(1, count(m.cardScroll[ci]))
 		m.cardScroll[ci]++
 	}
 	return m.cardScroll[ci]
@@ -1242,12 +1390,16 @@ func cardLabel(card store.Card) string {
 	return label
 }
 
-func cardLines(card store.Card, width int, selected bool) []string {
+func cardLines(card store.Card, width int, selected, fold bool) []string {
 	title := fit(cardLabel(card), width)
 	if selected {
 		title = selStyle.Width(width).Render(title)
 	}
 	lines := []string{title}
+	if fold && !selected && len(card.Subtasks) > 0 {
+		lines = append(lines, fit(fmt.Sprintf("  %d subtasks", len(card.Subtasks)), width))
+		return lines
+	}
 	for _, sub := range card.Subtasks {
 		mark := "  ▸ "
 		if sub.Done {
@@ -1256,6 +1408,33 @@ func cardLines(card store.Card, width int, selected bool) []string {
 		lines = append(lines, fit(mark+sub.Content, width))
 	}
 	return lines
+}
+
+func cardMatches(card *store.Card, term string) bool {
+	if term == "" {
+		return false
+	}
+	fold := term == strings.ToLower(term)
+	hit := func(s string) bool {
+		if fold {
+			return strings.Contains(strings.ToLower(s), term)
+		}
+		return strings.Contains(s, term)
+	}
+	if hit(card.Content) || hit(card.Description) {
+		return true
+	}
+	for i := range card.Checklist {
+		if hit(card.Checklist[i].Content) {
+			return true
+		}
+	}
+	for i := range card.Subtasks {
+		if hit(card.Subtasks[i].Content) {
+			return true
+		}
+	}
+	return false
 }
 
 func panelBox(title, body string, totalW, totalH int, on bool) string {
@@ -1405,8 +1584,12 @@ var helpLines = []string{
 	"  e/enter               edit card",
 	"  s                     subtasks",
 	"  d                     delete card",
+	"  y / p                 yank / paste card",
+	"  Y                     duplicate card",
+	"  f                     filter cards by the last search",
+	"  z                     fold subtasks on unfocused cards",
 	"  u / ctrl+r            undo / redo",
-	"  /                     search (enter/esc)",
+	"  /                     search title, description, checklist, subtasks",
 	"  n/N                   next/previous match",
 	"  5j, 3L, ...           count prefix for movement keys",
 	"",
@@ -1500,7 +1683,15 @@ func (m *model) position() string {
 	}
 	s := fmt.Sprintf("col %d/%d", m.col+1, len(b.Columns))
 	if ci := m.cardIndex(m.col); ci >= 0 {
-		s += fmt.Sprintf("  card %d/%d", ci+1, len(b.Columns[m.col].Cards))
+		ids := m.shownIDs(m.col)
+		pos := 0
+		for i, id := range ids {
+			if id == ci {
+				pos = i
+				break
+			}
+		}
+		s += fmt.Sprintf("  card %d/%d", pos+1, len(ids))
 	}
 	return s + " "
 }
@@ -1615,15 +1806,6 @@ func (m *model) findFrom(term string, c0, i0, dir int, includeStart bool) bool {
 		start = 0
 	}
 
-	fold := term == strings.ToLower(term) // smart-case
-	match := func(card *store.Card) bool {
-		if fold {
-			return strings.Contains(strings.ToLower(card.Content), term) ||
-				strings.Contains(strings.ToLower(card.Description), term)
-		}
-		return strings.Contains(card.Content, term) ||
-			strings.Contains(card.Description, term)
-	}
 	at := func(lin int) (int, int) {
 		for c := range b.Columns {
 			n := len(b.Columns[c].Cards)
@@ -1637,7 +1819,7 @@ func (m *model) findFrom(term string, c0, i0, dir int, includeStart bool) bool {
 
 	for k := start; k <= total; k++ {
 		c, i := at(((cur+dir*k)%total + total) % total)
-		if match(&b.Columns[c].Cards[i]) {
+		if cardMatches(&b.Columns[c].Cards[i], term) {
 			m.col = c
 			m.growCardSel()
 			m.cardSel[c] = i

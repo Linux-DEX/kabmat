@@ -164,7 +164,6 @@ func (f field) render(width int) string {
 	if width < 1 {
 		width = 1
 	}
-	cur := lipgloss.NewStyle().Reverse(true)
 	var out []string
 	for i, line := range f.lines {
 		r := []rune(line)
@@ -182,20 +181,22 @@ func (f field) render(width int) string {
 			b.WriteString(string(r[start:min(f.col, end)]))
 		}
 		if f.col < len(r) && f.col >= start && f.col < start+width {
-			b.WriteString(cur.Render(string(r[f.col])))
+			b.WriteString(cursorStyle.Render(string(r[f.col])))
 			if f.col+1 < end {
 				b.WriteString(string(r[f.col+1 : end]))
 			}
 		} else {
-			b.WriteString(cur.Render(" "))
+			b.WriteString(cursorStyle.Render(" "))
 		}
 		out = append(out, b.String())
 	}
 	if len(out) == 0 {
-		return cur.Render(" ")
+		return cursorStyle.Render(" ")
 	}
 	return strings.Join(out, "\n")
 }
+
+var cursorStyle = lipgloss.NewStyle().Reverse(true)
 
 func fit(s string, n int) string {
 	if n < 1 {

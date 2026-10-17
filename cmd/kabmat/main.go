@@ -21,6 +21,9 @@ func main() {
 		fail(err)
 	}
 	start, open, err := applyArgs(os.Args[1:], boards, os.Stdout)
+	if flushErr := boards.Flush(); flushErr != nil && err == nil {
+		err = flushErr
+	}
 	if err != nil {
 		fail(err)
 	}

@@ -154,6 +154,57 @@ func TestCardInfoBorder(t *testing.T) {
 	}
 }
 
+func TestYankFilterFold(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil || s.AddColumn(0, "Done") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "alpha", Checklist: []store.ChecklistItem{{Content: "needle"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "beta", Subtasks: []store.Subtask{{Content: "hidden-sub"}}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 120, 40
+	view := m.View()
+	if !strings.Contains(view, "Todo 2") || strings.Contains(view, "hidden-sub") || !strings.Contains(view, "1 subtasks") {
+		t.Fatalf("fold/count:\n%s", view)
+	}
+	press(m, "z")
+	if !strings.Contains(m.View(), "hidden-sub") {
+		t.Fatal(m.View())
+	}
+	press(m, "z", "/")
+	typeRunes(m, "needle")
+	press(m, "enter")
+	if got := m.cardIndex(0); got != 0 {
+		t.Fatalf("search card %d", got)
+	}
+	press(m, "f")
+	view = m.View()
+	if strings.Contains(view, "beta") || !strings.Contains(view, "1/2") {
+		t.Fatalf("filter:\n%s", view)
+	}
+	press(m, "f", "y", "l", "p")
+	done := s.Boards[0].Columns[1].Cards
+	if len(done) != 1 || done[0].Content != "alpha" || len(done[0].Checklist) != 1 || done[0].Checklist[0].Content != "needle" {
+		t.Fatalf("paste: %+v", done)
+	}
+	press(m, "h", "Y")
+	todo := s.Boards[0].Columns[0].Cards
+	if len(todo) != 3 || todo[1].Content != "alpha" || m.notice != "duplicated" {
+		t.Fatalf("dup notice=%q cards=%+v", m.notice, todo)
+	}
+}
+
 func press(m *model, keys ...string) {
 	for _, k := range keys {
 		m.Update(keyMsg(k))

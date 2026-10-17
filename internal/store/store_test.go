@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,9 @@ func TestMoveCardAcross(t *testing.T) {
 	if len(got) != 1 || got[0].Content != "ship" {
 		t.Fatalf("bottom insert: %+v", got)
 	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	rawb, err := os.ReadFile(s.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -142,5 +146,43 @@ func TestUndoRedo(t *testing.T) {
 	}
 	if ok, _ := s.Redo(); ok {
 		t.Fatal("redo past the end should do nothing")
+	}
+}
+
+func TestFlushWritesOncePerSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data")
+	backup := filepath.Join(dir, "data_bkp")
+	if err := os.WriteFile(path, []byte("Work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(path, backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddColumn(0, "Todo"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "Work\n" {
+		t.Fatalf("disk changed before flush: %q %v", raw, err)
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	bkp, err := os.ReadFile(backup)
+	if err != nil || string(bkp) != "Work\n" {
+		t.Fatalf("backup: %q %v", bkp, err)
+	}
+	if err := s.AddColumn(0, "Done"); err != nil || s.Flush() != nil {
+		t.Fatal(err)
+	}
+	bkp, err = os.ReadFile(backup)
+	if err != nil || string(bkp) != "Work\n" {
+		t.Fatalf("backup rewritten: %q %v", bkp, err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil || !strings.Contains(string(raw), "Done") {
+		t.Fatalf("flush: %q %v", raw, err)
 	}
 }

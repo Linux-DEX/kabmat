@@ -55,7 +55,12 @@ Press `?` inside the TUI for the full key list.
 | `Ctrl-l`, `Ctrl-n` | move the column right |
 | `C` / `E` / `D` | create / rename / delete a column |
 | `c` / `e`, `Enter` / `d` | create / edit / delete a card |
+| `y` / `p` | yank / paste a card |
+| `Y` | duplicate the focused card |
 | `s` | open subtasks for the focused card |
+| `/` | search titles, descriptions, checklist items, and subtask titles |
+| `f` | show only cards matching the last search |
+| `z` | fold subtasks on cards that are not focused |
 | `q` | back |
 
 ### Editing
