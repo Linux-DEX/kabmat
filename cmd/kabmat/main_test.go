@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,5 +47,43 @@ func TestAddCardFlag(t *testing.T) {
 	}
 	if _, _, err := applyArgs([]string{"-a", "nope"}, s, &out); err == nil || !strings.Contains(err.Error(), "no board") {
 		t.Fatal(err)
+	}
+	if _, _, err := applyArgs([]string{"-a", "ship", "-o", "Work", "-C", "Done"}, s, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Boards[0].Columns[1].Cards) != 1 || s.Boards[0].Columns[1].Cards[0].Content != "ship" {
+		t.Fatalf("column: %+v", s.Boards[0].Columns)
+	}
+	if _, _, err := applyArgs([]string{"-a", "n", "-o", "Work", "-C", "2"}, s, &out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTemplateAndExport(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, _, err := applyArgs([]string{"-T"}, s, &out); err == nil {
+		t.Fatal("template without -c should fail")
+	}
+	tuiOn, _, err := applyArgs([]string{"-c", "Work", "-T"}, s, &out)
+	if err != nil || !tuiOn || len(s.Boards[0].Columns) != 3 || !s.Boards[0].Columns[2].Gate {
+		t.Fatalf("tui=%v err=%v cols=%+v", tuiOn, err, s.Boards[0].Columns)
+	}
+	out.Reset()
+	path := filepath.Join(dir, "board.md")
+	if _, _, err := applyArgs([]string{"-x", path, "-o", "Work"}, s, &out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), "# Work") || !strings.Contains(string(b), "## Done (0) · checklist") {
+		t.Fatalf("export %q %v", b, err)
+	}
+	out.Reset()
+	if _, _, err := applyArgs([]string{"-x"}, s, &out); err != nil || !strings.Contains(out.String(), "# Work") {
+		t.Fatal(err, out.String())
 	}
 }

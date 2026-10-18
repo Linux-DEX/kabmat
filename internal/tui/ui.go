@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Linux-DEX/kabmat/internal/store"
 
@@ -40,7 +45,12 @@ const (
 	inputRenameColumn
 	inputNewItem
 	inputEditItem
+	inputWIP
+	inputTags
+	inputDue
 )
+
+const staleDays = 7
 
 var repeatable = map[string]bool{
 	"j": true, "k": true, "h": true, "l": true,
@@ -56,6 +66,7 @@ const (
 	confirmDeleteBoard confirmKind = iota
 	confirmDeleteColumn
 	confirmDeleteCard
+	confirmDeleteCards
 )
 
 type cardEdit struct {
@@ -67,6 +78,10 @@ type cardEdit struct {
 	focus     int
 	checklist []store.ChecklistItem
 	subtasks  []store.Subtask
+	priority  int
+	due       string
+	tags      []string
+	moved     string
 }
 
 type subEdit struct {
@@ -118,6 +133,8 @@ type model struct {
 	searchMiss  bool
 	searchCol   int
 	searchSel   []int
+	picked      map[[2]int]struct{}
+	hideArchive bool
 }
 
 func Run(s *store.Store, open string) error {
@@ -328,13 +345,9 @@ func (m *model) boardKey(key string) {
 		m.helpOff = 0
 		m.push(layerHelp)
 	case "h":
-		if m.col > 0 {
-			m.col--
-		}
+		m.stepCol(-1)
 	case "l":
-		if m.col < n-1 {
-			m.col++
-		}
+		m.stepCol(1)
 	case "k":
 		m.moveCardFocus(-1)
 	case "j":
@@ -353,6 +366,45 @@ func (m *model) boardKey(key string) {
 		m.shiftCard(-1)
 	case "L":
 		m.shiftCard(1)
+	case "w":
+		if n > 0 {
+			cur := ""
+			if b.Columns[m.col].WIP > 0 {
+				cur = strconv.Itoa(b.Columns[m.col].WIP)
+			}
+			m.openInput(inputWIP, " WIP limit (0 clears) ", cur)
+		}
+	case "W":
+		m.toggleGate()
+	case "A":
+		m.archiveTargets()
+	case "v":
+		m.hideArchive = !m.hideArchive
+		m.snapCol()
+		if m.hideArchive {
+			m.notice = "archive hidden"
+		} else {
+			m.notice = "archive shown"
+		}
+	case "!":
+		m.cyclePriority()
+	case "esc":
+		if len(m.picked) > 0 {
+			m.picked = nil
+			m.notice = "selection cleared"
+		}
+	case " ", "space":
+		m.togglePick()
+	case "t":
+		if len(m.targets()) > 0 {
+			m.openTags()
+		}
+	case "T":
+		if len(m.targets()) > 0 {
+			m.openDue()
+		}
+	case "o":
+		m.openLink()
 	case "K", "shift+up":
 		m.swapCard(-1)
 	case "J", "shift+down":
@@ -385,12 +437,7 @@ func (m *model) boardKey(key string) {
 			m.push(layerSubtasks)
 		}
 	case "d":
-		ci := m.cardIndex(m.col)
-		if ci >= 0 {
-			m.confirmKind = confirmDeleteCard
-			m.confirmMsg = fmt.Sprintf("Delete card %q?", shortName(b.Columns[m.col].Cards[ci].Content))
-			m.push(layerConfirm)
-		}
+		m.confirmDelete()
 	case "y":
 		m.yankCard()
 	case "p":
@@ -440,6 +487,7 @@ func (m *model) inputKey(key string, runes []rune) {
 		return
 	}
 	value := m.prompt.value()
+	fromCard := len(m.stack) >= 2 && m.stack[len(m.stack)-2] == layerCard
 	m.pop()
 	var err error
 	switch m.promptKind {
@@ -467,6 +515,30 @@ func (m *model) inputKey(key string, runes []rune) {
 		value = strings.TrimSpace(value)
 		if value != "" && m.checkSel >= 0 && m.checkSel < len(m.edit.checklist) {
 			m.edit.checklist[m.checkSel].Content = value
+		}
+	case inputWIP:
+		err = m.setWIP(value)
+	case inputTags:
+		tags := store.ParseTags(value)
+		if fromCard {
+			m.edit.tags = tags
+		} else {
+			err = m.store.ApplyCards(m.board, m.targets(), func(c *store.Card) {
+				c.Tags = append([]string(nil), tags...)
+			})
+		}
+	case inputDue:
+		var due string
+		due, err = parseDue(value)
+		if err != nil {
+			break
+		}
+		if fromCard {
+			m.edit.due = due
+		} else {
+			err = m.store.ApplyCards(m.board, m.targets(), func(c *store.Card) {
+				c.Due = due
+			})
 		}
 	}
 	if err != nil {
@@ -513,6 +585,9 @@ func (m *model) applyConfirm() {
 		if ci >= 0 {
 			err = m.store.DeleteCard(m.board, m.col, ci)
 		}
+	case confirmDeleteCards:
+		err = m.store.DeleteCards(m.board, m.targets())
+		m.picked = nil
 	}
 	if err != nil {
 		m.notice = err.Error()
@@ -542,6 +617,24 @@ func (m *model) cardKey(key string, runes []rune) {
 		f.handle("enter", nil)
 	case "tab":
 		m.edit.focus ^= 1
+	case "!":
+		if !f.insert {
+			m.edit.priority = (m.edit.priority + 1) % 3
+			return
+		}
+		f.handle(key, runes)
+	case "t":
+		if !f.insert {
+			m.openTags()
+			return
+		}
+		f.handle(key, runes)
+	case "T":
+		if !f.insert {
+			m.openDue()
+			return
+		}
+		f.handle(key, runes)
 	case "c":
 		if !f.insert && strings.TrimSpace(m.edit.content.value()) != "" {
 			if len(m.edit.checklist) == 0 {
@@ -582,6 +675,10 @@ func (m *model) openCard() bool {
 		desc:      newField(card.Description, true),
 		checklist: cloneItems(card.Checklist),
 		subtasks:  cloneSubs(card.Subtasks),
+		priority:  card.Priority,
+		due:       card.Due,
+		tags:      cloneTags(card.Tags),
+		moved:     card.Moved,
 	}
 	m.push(layerCard)
 	return true
@@ -593,6 +690,10 @@ func (m *model) submitCard() {
 		Description: strings.TrimRight(m.edit.desc.value(), "\n"),
 		Checklist:   m.edit.checklist,
 		Subtasks:    m.edit.subtasks,
+		Priority:    m.edit.priority,
+		Due:         m.edit.due,
+		Tags:        cloneTags(m.edit.tags),
+		Moved:       m.edit.moved,
 	}
 	var err error
 	if m.edit.isNew {
@@ -606,9 +707,7 @@ func (m *model) submitCard() {
 	}
 	if err != nil {
 		m.notice = err.Error()
-		if strings.TrimSpace(card.Content) == "" {
-			return
-		}
+		return
 	}
 	m.pop()
 }
@@ -617,6 +716,9 @@ func (m *model) leaveSubtasks() {
 	before := len(m.stack)
 	m.submitCard()
 	if len(m.stack) == before {
+		if m.top() == layerChecklist || m.top() == layerSubtasks || m.top() == layerSubtask {
+			m.pop()
+		}
 		return
 	}
 	for m.top() == layerCard || m.top() == layerSubtasks || m.top() == layerSubtask {
@@ -793,6 +895,7 @@ func (m *model) switchBoard(dir int) {
 	m.colScroll = 0
 	m.cardSel = nil
 	m.cardScroll = nil
+	m.picked = nil
 	m.openBoard(next, m.returnToMenu)
 }
 
@@ -826,17 +929,30 @@ func (m *model) moveKey(key string) {
 }
 
 func (m *model) sendCard(dst int) {
-	ci := m.cardIndex(m.col)
-	if ci < 0 || dst == m.col {
+	picks := m.movePicks(0)
+	if len(picks) == 0 {
 		return
 	}
-	src := m.col
-	moved, err := m.store.MoveCardTo(m.board, src, ci, dst)
-	if err != nil {
-		m.notice = err.Error()
-		return
+	var blocked error
+	moved := 0
+	for _, p := range picks {
+		if p[0] == dst {
+			continue
+		}
+		ok, err := m.store.MoveCardTo(m.board, p[0], p[1], dst)
+		if err != nil {
+			blocked = err
+			break
+		}
+		if ok {
+			moved++
+		}
 	}
-	if !moved {
+	m.picked = nil
+	if blocked != nil {
+		m.notice = blocked.Error()
+	}
+	if moved == 0 {
 		return
 	}
 	m.col = dst
@@ -890,12 +1006,38 @@ func (m *model) remember() {
 }
 
 func (m *model) shiftCard(dir int) {
-	ci := m.cardIndex(m.col)
-	if ci < 0 {
+	picks := m.movePicks(dir)
+	if len(picks) == 0 {
 		return
 	}
-	if _, err := m.store.MoveCardHoriz(m.board, m.col, ci, dir); err != nil {
-		m.notice = err.Error()
+	var blocked error
+	moved := 0
+	focus := m.col
+	for _, p := range picks {
+		ok, err := m.store.MoveCardHoriz(m.board, p[0], p[1], dir)
+		if err != nil {
+			blocked = err
+			break
+		}
+		if ok {
+			moved++
+			focus = p[0] + dir
+		}
+	}
+	m.picked = nil
+	if blocked != nil {
+		m.notice = blocked.Error()
+	}
+	if moved == 0 {
+		return
+	}
+	m.col = focus
+	m.growCardSel()
+	cards := m.curBoard().Columns[m.col].Cards
+	if m.store.CardAtBottom {
+		m.cardSel[m.col] = len(cards) - 1
+	} else {
+		m.cardSel[m.col] = 0
 	}
 }
 
@@ -1058,6 +1200,7 @@ func (m *model) shownIDs(ci int) []int {
 func cloneCard(c store.Card) store.Card {
 	c.Checklist = cloneItems(c.Checklist)
 	c.Subtasks = cloneSubs(c.Subtasks)
+	c.Tags = cloneTags(c.Tags)
 	return c
 }
 
@@ -1140,25 +1283,83 @@ func (m *model) visibleCols() int {
 	}
 }
 
-func (m *model) pinCol() {
+func (m *model) shownCols() []int {
 	b := m.curBoard()
-	if b == nil || len(b.Columns) == 0 {
-		m.col = 0
+	if b == nil {
+		return nil
+	}
+	out := make([]int, 0, len(b.Columns))
+	for i := range b.Columns {
+		if m.hideArchive && b.Columns[i].Archive {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+func (m *model) snapCol() {
+	ids := m.shownCols()
+	if len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		if id == m.col {
+			return
+		}
+	}
+	best := ids[0]
+	for _, id := range ids {
+		if id <= m.col {
+			best = id
+		}
+	}
+	m.col = best
+}
+
+func (m *model) stepCol(dir int) {
+	ids := m.shownCols()
+	pos := -1
+	for i, id := range ids {
+		if id == m.col {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		m.snapCol()
+		return
+	}
+	next := pos + dir
+	if next < 0 || next >= len(ids) {
+		return
+	}
+	m.col = ids[next]
+}
+
+func (m *model) pinCol() {
+	ids := m.shownCols()
+	if len(ids) == 0 {
 		m.colScroll = 0
 		return
 	}
-	if m.col >= len(b.Columns) {
-		m.col = len(b.Columns) - 1
-	}
-	if m.col < 0 {
-		m.col = 0
+	m.snapCol()
+	pos := 0
+	for i, id := range ids {
+		if id == m.col {
+			pos = i
+			break
+		}
 	}
 	vis := m.visibleCols()
-	if m.col < m.colScroll {
-		m.colScroll = m.col
+	if pos < m.colScroll {
+		m.colScroll = pos
 	}
-	if m.col >= m.colScroll+vis {
-		m.colScroll = m.col - vis + 1
+	if pos >= m.colScroll+vis {
+		m.colScroll = pos - vis + 1
+	}
+	if m.colScroll < 0 {
+		m.colScroll = 0
 	}
 }
 
@@ -1187,11 +1388,50 @@ func (m *model) pinMenu(window int) {
 }
 
 func (m *model) header() string {
-	title := "kabmat"
-	if m.screen == screenBoard && m.curBoard() != nil {
-		title = m.curBoard().Name
+	if m.screen != screenBoard || m.curBoard() == nil {
+		label := " kabmat"
+		if n := len(m.store.Boards); n > 0 && m.screen == screenMenu {
+			label += "  ·  " + unit(n, "board", "boards")
+		}
+		return barStyle.Width(m.width).Render(fit(label, max(1, m.width)))
 	}
-	return barStyle.Width(m.width).Render(" " + fit(title, max(1, m.width-2)))
+	b := m.curBoard()
+	cards, archived := 0, 0
+	var parts []string
+	for i := range b.Columns {
+		col := b.Columns[i]
+		n := len(col.Cards)
+		cards += n
+		if col.Archive {
+			archived += n
+			if m.hideArchive {
+				continue
+			}
+		}
+		parts = append(parts, colHeadPlain(col))
+	}
+	right := unit(cards, "card", "cards")
+	if m.hideArchive && archived > 0 {
+		right += " · " + strconv.Itoa(archived) + " archived"
+	}
+	left := " " + b.Name
+	mid := strings.Join(parts, "  ")
+	if lipgloss.Width(left)+2+lipgloss.Width(mid)+2+lipgloss.Width(right) > m.width {
+		mid = ""
+	}
+	line := left
+	if mid != "" {
+		line += "  " + mid
+	}
+	pad := m.width - lipgloss.Width(line) - lipgloss.Width(right)
+	if pad < 1 {
+		line = fit(left, max(1, m.width-lipgloss.Width(right)-1))
+		pad = m.width - lipgloss.Width(line) - lipgloss.Width(right)
+		if pad < 1 {
+			pad = 1
+		}
+	}
+	return barStyle.Width(m.width).Render(line + strings.Repeat(" ", pad) + right)
 }
 
 func (m *model) footer() string {
@@ -1204,6 +1444,8 @@ func (m *model) footer() string {
 	}
 	if m.notice != "" {
 		hint = m.notice
+	} else if n := len(m.picked); n > 0 && m.screen == screenBoard {
+		hint = fmt.Sprintf("%d selected   H/L move   d delete   A archive   t tag   esc clear", n)
 	} else if m.count > 0 {
 		hint = fmt.Sprintf("count: %d", m.count)
 	}
@@ -1287,6 +1529,10 @@ func (m *model) boardBody(h int) string {
 	if b == nil || len(b.Columns) == 0 {
 		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, mutedStyle.Render("C to create a new column"))
 	}
+	ids := m.shownCols()
+	if len(ids) == 0 {
+		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, mutedStyle.Render("v to show the archive"))
+	}
 	m.pinCol()
 	vis := m.visibleCols()
 	gap := 1
@@ -1294,9 +1540,12 @@ func (m *model) boardBody(h int) string {
 	if colW < 16 {
 		colW = 16
 	}
-	end := min(len(b.Columns), m.colScroll+vis)
+	end := min(len(ids), m.colScroll+vis)
 	boxes := make([]string, 0, end-m.colScroll)
-	for i := m.colScroll; i < end; i++ {
+	for n, i := range ids[m.colScroll:end] {
+		if n > 0 {
+			boxes = append(boxes, strings.Repeat(" ", gap))
+		}
 		boxes = append(boxes, m.columnBox(i, colW, h))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, boxes...)
@@ -1321,7 +1570,7 @@ func (m *model) columnBox(ci, w, h int) string {
 	ensure := func(i int) []string {
 		if blocks[i] == nil {
 			id := ids[i]
-			blocks[i] = cardLines(col.Cards[id], textW, id == sel, m.foldSubs)
+			blocks[i] = cardLines(col.Cards[id], textW, id == sel, m.foldSubs, m.isPicked(ci, id), col.Archive)
 		}
 		return blocks[i]
 	}
@@ -1335,11 +1584,14 @@ func (m *model) columnBox(ci, w, h int) string {
 	start := m.scrollShown(ci, len(ids), selPos, cardRoom, func(i int) int {
 		return len(ensure(i))
 	})
-	title := fmt.Sprintf("%s %d", col.Title, len(col.Cards))
-	if m.filtering && m.search != "" {
-		title = fmt.Sprintf("%s %d/%d", col.Title, len(ids), len(col.Cards))
+	plain, over := columnHeading(col, len(ids), m.filtering && m.search != "")
+	title := fit(plain, textW)
+	if over {
+		title = warnStyle.Render(title)
+	} else {
+		title = titleStyle.Render(title)
 	}
-	lines := []string{titleStyle.Render(fit(title, textW))}
+	lines := []string{title}
 	if len(ids) == 0 {
 		msg := "c new card"
 		if len(col.Cards) > 0 {
@@ -1360,8 +1612,13 @@ func (m *model) columnBox(ci, w, h int) string {
 		}
 	}
 	st := boxStyle
-	if ci == m.col {
+	switch {
+	case ci == m.col:
 		st = boxOnStyle
+	case over:
+		st = boxHotStyle
+	case col.Archive:
+		st = boxArchiveStyle
 	}
 	return st.Width(innerW).Height(innerH).Render(strings.Join(lines, "\n"))
 }
@@ -1403,7 +1660,7 @@ func (m *model) moveDialog() string {
 	}
 	var lines []string
 	for i := off; i < len(b.Columns) && i < off+room; i++ {
-		row := b.Columns[i].Title
+		row := colHeadPlain(b.Columns[i])
 		if i == m.col {
 			row += " ·"
 		}
@@ -1469,7 +1726,10 @@ func (m *model) cardDialog() string {
 	if m.activeField().insert {
 		mode = "INSERT"
 	}
-	hint := mode + "   tab field   i insert   c checklist   s subtasks   enter save   q board"
+	hint := mode + "   ! pri   t tags   T due   tab   c checklist   s subtasks   enter save"
+	if status := cardStatus(m.edit); status != "" {
+		hint = status + "   " + hint
+	}
 	if m.notice != "" {
 		hint = m.notice
 	}
@@ -1597,14 +1857,20 @@ func cardLabel(card store.Card) string {
 	return label
 }
 
-func cardLines(card store.Card, width int, selected, fold bool) []string {
+func cardLines(card store.Card, width int, selected, fold, picked, archive bool) []string {
 	inner := max(1, width-2) // border takes 1 column on each side
-
-	title := fit(cardLabel(card), inner)
-	if selected {
+	mark, markW := priMark(card.Priority)
+	title := fit(cardLabel(card), max(1, inner-markW))
+	switch {
+	case selected:
 		title = titleStyle.Render(title)
+	case daysSince(card.Moved) >= staleDays && !archive:
+		title = staleStyle.Render(title)
 	}
-	lines := []string{title}
+	lines := []string{mark + title}
+	if meta := metaLine(card, inner, !archive); meta != "" {
+		lines = append(lines, meta)
+	}
 
 	if selected {
 		if preview := firstLine(card.Description); preview != "" {
@@ -1625,8 +1891,13 @@ func cardLines(card store.Card, width int, selected, fold bool) []string {
 	}
 
 	st := cardStyle
-	if selected {
+	switch {
+	case selected:
 		st = cardOnStyle
+	case picked:
+		st = cardPickStyle
+	case daysSince(card.Moved) >= staleDays && !archive:
+		st = cardStaleStyle
 	}
 	return strings.Split(st.Width(inner).Render(strings.Join(lines, "\n")), "\n")
 }
@@ -1662,7 +1933,12 @@ func cardMatches(card *store.Card, term string) bool {
 			return true
 		}
 	}
-	return false
+	for _, tag := range card.Tags {
+		if hit("#"+tag) || hit(tag) {
+			return true
+		}
+	}
+	return card.Due != "" && hit(card.Due)
 }
 
 func panelBox(title, body string, totalW, totalH int, on bool) string {
@@ -1705,6 +1981,15 @@ func clampLine(line string, n int) string {
 		return line
 	}
 	return fit(line, n)
+}
+
+func cloneTags(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 func cloneItems(in []store.ChecklistItem) []store.ChecklistItem {
@@ -1752,16 +2037,27 @@ func shortName(s string) string {
 }
 
 var (
-	barStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
-	modeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("33"))
-	titleStyle  = lipgloss.NewStyle().Bold(true)
-	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
-	mutedStyle  = lipgloss.NewStyle().Faint(true)
-	doneStyle   = lipgloss.NewStyle().Faint(true).Strikethrough(true)
-	boxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	boxOnStyle  = boxStyle.BorderForeground(lipgloss.Color("33"))
-	cardStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
-	cardOnStyle = cardStyle.BorderForeground(lipgloss.Color("33"))
+	barStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
+	modeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("33"))
+	titleStyle      = lipgloss.NewStyle().Bold(true)
+	selStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
+	mutedStyle      = lipgloss.NewStyle().Faint(true)
+	doneStyle       = lipgloss.NewStyle().Faint(true).Strikethrough(true)
+	warnStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	priStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	priHotStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	dueStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	dueHotStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	tagStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	staleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	boxStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	boxOnStyle      = boxStyle.BorderForeground(lipgloss.Color("33"))
+	boxHotStyle     = boxStyle.BorderForeground(lipgloss.Color("203"))
+	boxArchiveStyle = boxStyle.BorderForeground(lipgloss.Color("238"))
+	cardStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
+	cardOnStyle     = cardStyle.BorderForeground(lipgloss.Color("33"))
+	cardPickStyle   = cardStyle.BorderForeground(lipgloss.Color("141"))
+	cardStaleStyle  = cardStyle.BorderForeground(lipgloss.Color("238"))
 )
 
 var helpLines = []string{
@@ -1806,6 +2102,16 @@ var helpLines = []string{
 	"  g/G                   first/last card",
 	"  H/L                   move card across",
 	"  m                     move card to a column",
+	"  space                 select for bulk move, delete, tag, due",
+	"  esc                   clear the selection",
+	"  w                     set the column WIP limit (0 clears)",
+	"  W                     toggle the finished-checklist rule",
+	"  A                     archive the card (keeps it off the working board)",
+	"  v                     hide or show archive columns",
+	"  !                     cycle priority: none, !, !!",
+	"  t                     set tags (#work). Search and filter use them",
+	"  T                     due date YYYY-MM-DD, or +days to snooze",
+	"  o                     open the first http(s) link on the card",
 	"  X                     clear finished checklist items",
 	"  K/J, shift+up/down    move focused card up/down",
 	"  ctrl+h/ctrl+p         move column left",
@@ -1835,6 +2141,7 @@ var helpLines = []string{
 	"Card info (fills the screen)",
 	"  tab                   switch content/description",
 	"  i                     insert",
+	"  ! / t / T             priority, tags, due date",
 	"  enter                 save",
 	"  q                     return to the board",
 	"  c                     checklist",
@@ -1920,7 +2227,20 @@ func (m *model) position() string {
 	if b == nil || len(b.Columns) == 0 {
 		return ""
 	}
-	s := fmt.Sprintf("col %d/%d", m.col+1, len(b.Columns))
+	ids := m.shownCols()
+	pos := 1
+	for i, id := range ids {
+		if id == m.col {
+			pos = i + 1
+			break
+		}
+	}
+	total := len(ids)
+	if total == 0 {
+		total = len(b.Columns)
+		pos = m.col + 1
+	}
+	s := fmt.Sprintf("col %d/%d", pos, total)
 	if ci := m.cardIndex(m.col); ci >= 0 {
 		ids := m.shownIDs(m.col)
 		pos := 0
@@ -2082,4 +2402,385 @@ func (m *model) searchBar() string {
 	pad := max(0, m.width-lipgloss.Width(left)-1-lipgloss.Width(right))
 	return barStyle.Render(left) + modeStyle.Render(" ") +
 		barStyle.Render(strings.Repeat(" ", pad)+right)
+}
+
+func columnHeading(col store.Column, shown int, filtering bool) (string, bool) {
+	name := col.Title
+	if col.Gate {
+		name += "*"
+	}
+	n := len(col.Cards)
+	over := col.WIP > 0 && n > col.WIP
+	switch {
+	case filtering:
+		return fmt.Sprintf("%s %d/%d", name, shown, n), over
+	case col.WIP > 0:
+		return fmt.Sprintf("%s %d/%d", name, n, col.WIP), over
+	default:
+		return fmt.Sprintf("%s %d", name, n), false
+	}
+}
+
+func colHeadPlain(col store.Column) string {
+	s, over := columnHeading(col, len(col.Cards), false)
+	if over {
+		return s + "!"
+	}
+	return s
+}
+
+func (m *model) isPicked(col, card int) bool {
+	_, ok := m.picked[[2]int{col, card}]
+	return ok
+}
+
+func (m *model) togglePick() {
+	ci := m.cardIndex(m.col)
+	if ci < 0 {
+		return
+	}
+	if m.picked == nil {
+		m.picked = map[[2]int]struct{}{}
+	}
+	k := [2]int{m.col, ci}
+	if _, ok := m.picked[k]; ok {
+		delete(m.picked, k)
+		return
+	}
+	m.picked[k] = struct{}{}
+}
+
+func (m *model) targets() [][2]int {
+	b := m.curBoard()
+	if b == nil {
+		return nil
+	}
+	if len(m.picked) == 0 {
+		ci := m.cardIndex(m.col)
+		if ci < 0 {
+			return nil
+		}
+		return [][2]int{{m.col, ci}}
+	}
+	out := make([][2]int, 0, len(m.picked))
+	for p := range m.picked {
+		if p[0] >= 0 && p[0] < len(b.Columns) && p[1] >= 0 && p[1] < len(b.Columns[p[0]].Cards) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (m *model) movePicks(dir int) [][2]int {
+	picks := m.targets()
+	for i := 1; i < len(picks); i++ {
+		j := i
+		for j > 0 && pickBefore(picks[j], picks[j-1], dir) {
+			picks[j], picks[j-1] = picks[j-1], picks[j]
+			j--
+		}
+	}
+	return picks
+}
+
+func pickBefore(a, b [2]int, dir int) bool {
+	if a[0] != b[0] {
+		if dir < 0 {
+			return a[0] < b[0]
+		}
+		return a[0] > b[0]
+	}
+	return a[1] > b[1]
+}
+
+func (m *model) confirmDelete() {
+	t := m.targets()
+	if len(t) == 0 {
+		return
+	}
+	m.confirmKind = confirmDeleteCards
+	if len(t) == 1 {
+		card := m.curBoard().Columns[t[0][0]].Cards[t[0][1]]
+		m.confirmMsg = fmt.Sprintf("Delete card %q?", shortName(card.Content))
+	} else {
+		m.confirmMsg = fmt.Sprintf("Delete %d cards?", len(t))
+	}
+	m.push(layerConfirm)
+}
+
+func (m *model) toggleGate() {
+	b := m.curBoard()
+	if b == nil || m.col < 0 || m.col >= len(b.Columns) {
+		return
+	}
+	on, err := m.store.ToggleGate(m.board, m.col)
+	if err != nil {
+		m.notice = err.Error()
+		return
+	}
+	if on {
+		m.notice = "checklist required to enter " + b.Columns[m.col].Title
+	} else {
+		m.notice = "entry rule cleared"
+	}
+}
+
+func (m *model) setWIP(value string) error {
+	value = strings.TrimSpace(value)
+	n := 0
+	if value != "" {
+		var err error
+		n, err = strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return errors.New("WIP limit is a number, 0 clears")
+		}
+	}
+	if err := m.store.SetWIP(m.board, m.col, n); err != nil {
+		return err
+	}
+	if n == 0 {
+		m.notice = "WIP limit cleared"
+	} else {
+		m.notice = fmt.Sprintf("WIP limit %d", n)
+	}
+	return nil
+}
+
+func (m *model) archiveTargets() {
+	picks := m.movePicks(1)
+	if len(picks) == 0 {
+		return
+	}
+	var blocked error
+	dst, n := -1, 0
+	for _, p := range picks {
+		d, err := m.store.ArchiveCard(m.board, p[0], p[1])
+		if err != nil {
+			if errors.Is(err, store.ErrArchived) {
+				continue
+			}
+			blocked = err
+			break
+		}
+		dst, n = d, n+1
+	}
+	m.picked = nil
+	if blocked != nil {
+		m.notice = blocked.Error()
+	}
+	if n == 0 {
+		if m.notice == "" {
+			m.notice = "already archived"
+		}
+		return
+	}
+	if dst >= 0 && !m.hideArchive {
+		m.col = dst
+		m.growCardSel()
+		if m.store.CardAtBottom {
+			m.cardSel[dst] = len(m.curBoard().Columns[dst].Cards) - 1
+		} else {
+			m.cardSel[dst] = 0
+		}
+	}
+	if m.notice == "" {
+		m.notice = "archived"
+	}
+}
+
+func (m *model) cyclePriority() {
+	t := m.targets()
+	if len(t) == 0 {
+		return
+	}
+	if err := m.store.ApplyCards(m.board, t, func(c *store.Card) {
+		c.Priority = (c.Priority + 1) % 3
+	}); err != nil {
+		m.notice = err.Error()
+	}
+}
+
+func (m *model) openTags() {
+	var tags []string
+	if m.top() == layerCard {
+		tags = m.edit.tags
+	} else if len(m.picked) == 0 {
+		if t := m.targets(); len(t) == 1 {
+			tags = m.curBoard().Columns[t[0][0]].Cards[t[0][1]].Tags
+		}
+	}
+	shown := make([]string, len(tags))
+	for i, tag := range tags {
+		shown[i] = "#" + tag
+	}
+	m.openInput(inputTags, " Tags ", strings.Join(shown, " "))
+}
+
+func (m *model) openDue() {
+	cur := ""
+	if m.top() == layerCard {
+		cur = m.edit.due
+	} else if len(m.picked) == 0 {
+		if t := m.targets(); len(t) == 1 {
+			cur = m.curBoard().Columns[t[0][0]].Cards[t[0][1]].Due
+		}
+	}
+	m.openInput(inputDue, " Due (YYYY-MM-DD or +days) ", cur)
+}
+
+func (m *model) openLink() {
+	ci := m.cardIndex(m.col)
+	if ci < 0 {
+		return
+	}
+	card := m.curBoard().Columns[m.col].Cards[ci]
+	url := firstURL(card.Content, card.Description)
+	if url == "" {
+		m.notice = "no link on this card"
+		return
+	}
+	if err := openBrowser(url); err != nil {
+		m.notice = err.Error()
+		return
+	}
+	m.notice = "opened " + url
+}
+
+func firstURL(parts ...string) string {
+	for _, s := range parts {
+		for _, f := range strings.Fields(s) {
+			if strings.HasPrefix(f, "https://") || strings.HasPrefix(f, "http://") {
+				return strings.TrimRight(f, ".,);]>\"'")
+			}
+		}
+	}
+	return ""
+}
+
+func openBrowser(url string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name, args = "open", []string{url}
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		name, args = "xdg-open", []string{url}
+	}
+	return exec.Command(name, args...).Start()
+}
+
+func priMark(p int) (string, int) {
+	switch p {
+	case 1:
+		return priStyle.Render("!") + " ", 2
+	case 2:
+		return priHotStyle.Render("!!") + " ", 3
+	default:
+		return "", 0
+	}
+}
+
+func metaLine(card store.Card, width int, showAge bool) string {
+	var plain []string
+	var styled []string
+	for _, tag := range card.Tags {
+		p := "#" + tag
+		plain = append(plain, p)
+		styled = append(styled, tagStyle.Render(p))
+	}
+	if card.Due != "" {
+		p := card.Due
+		if len(p) == 10 {
+			p = p[5:]
+		}
+		plain = append(plain, p)
+		switch dueKind(card.Due) {
+		case 2:
+			styled = append(styled, dueHotStyle.Render(p))
+		case 1:
+			styled = append(styled, dueStyle.Render(p))
+		default:
+			styled = append(styled, mutedStyle.Render(p))
+		}
+	}
+	if showAge {
+		if d := daysSince(card.Moved); d >= staleDays {
+			p := fmt.Sprintf("%dd", d)
+			plain = append(plain, p)
+			styled = append(styled, staleStyle.Render(p))
+		}
+	}
+	if len(plain) == 0 {
+		return ""
+	}
+	raw := strings.Join(plain, " ")
+	if lipgloss.Width(raw) > width {
+		return mutedStyle.Render(fit(raw, width))
+	}
+	return strings.Join(styled, " ")
+}
+
+func dueKind(due string) int {
+	today := time.Now().Format("2006-01-02")
+	switch {
+	case due == today:
+		return 1
+	case due != "" && due < today:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func daysSince(day string) int {
+	t, err := time.Parse("2006-01-02", day)
+	if err != nil {
+		return 0
+	}
+	now, err := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
+	if err != nil {
+		return 0
+	}
+	d := int(now.Sub(t).Hours() / 24)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+func cardStatus(e cardEdit) string {
+	var parts []string
+	switch e.priority {
+	case 1:
+		parts = append(parts, "!")
+	case 2:
+		parts = append(parts, "!!")
+	}
+	for _, tag := range e.tags {
+		parts = append(parts, "#"+tag)
+	}
+	if e.due != "" {
+		parts = append(parts, "due "+e.due)
+	}
+	return strings.Join(parts, " ")
+}
+
+func parseDue(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(s, "+") {
+		n, err := strconv.Atoi(s[1:])
+		if err != nil || n < 0 {
+			return "", errors.New("snooze is +days")
+		}
+		return time.Now().AddDate(0, 0, n).Format("2006-01-02"), nil
+	}
+	if _, err := time.Parse("2006-01-02", s); err != nil {
+		return "", errors.New("due date is YYYY-MM-DD or +days")
+	}
+	return s, nil
 }

@@ -172,6 +172,117 @@ func TestBoardNames(t *testing.T) {
 	}
 }
 
+func TestMetaRoundTrip(t *testing.T) {
+	const raw = "Work\n" +
+		" Doing {wip:2,check}\n" +
+		"  ship\n" +
+		"   @pri:2 due:2026-10-20 tag:work tag:home moved:2026-10-01\n" +
+		"   -box\n" +
+		" Archive {archive}\n" +
+		" Review {draft}\n"
+	boards, err := parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := boards[0].Columns
+	if len(col) != 3 || col[0].WIP != 2 || !col[0].Gate || col[0].Title != "Doing" {
+		t.Fatalf("doing: %+v", col[0])
+	}
+	if !col[1].Archive || col[1].Title != "Archive" || col[2].Title != "Review {draft}" {
+		t.Fatalf("columns: %+v", col)
+	}
+	card := col[0].Cards[0]
+	if card.Priority != 2 || card.Due != "2026-10-20" || card.Moved != "2026-10-01" || len(card.Tags) != 2 || card.Tags[0] != "work" {
+		t.Fatalf("card: %+v", card)
+	}
+	if len(card.Checklist) != 1 || card.Checklist[0].Content != "box" {
+		t.Fatalf("checklist: %+v", card.Checklist)
+	}
+	if got := encode(boards); got != raw {
+		t.Fatalf("encode\n%s", got)
+	}
+}
+
+func TestWIPGateArchive(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateKanban("Work"); err != nil {
+		t.Fatal(err)
+	}
+	cols := s.Boards[0].Columns
+	if len(cols) != 3 || cols[2].Title != "Done" || !cols[2].Gate {
+		t.Fatalf("template: %+v", cols)
+	}
+	card := Card{Content: "ship", Checklist: []ChecklistItem{{Content: "box"}}}
+	if err := s.AddCard(0, 0, card); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MoveCardTo(0, 0, 0, 2); err == nil || !strings.Contains(err.Error(), "checklist") {
+		t.Fatal(err)
+	}
+	card.Checklist[0].Done = true
+	if err := s.UpdateCard(0, 0, 0, card); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MoveCardTo(0, 0, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWIP(0, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, Card{Content: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, Card{Content: "two"}); err == nil || !strings.Contains(err.Error(), "WIP") {
+		t.Fatal(err)
+	}
+	if _, err := s.ArchiveCard(0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Boards[0].Columns[0].Cards) != 0 || s.Boards[0].Columns[3].Title != "Archive" || !s.Boards[0].Columns[3].Archive {
+		t.Fatalf("archive: %+v", s.Boards[0].Columns)
+	}
+	if _, err := s.ArchiveCard(0, 3, 0); err != ErrArchived {
+		t.Fatal(err)
+	}
+	md := Markdown(s.Boards)
+	if !strings.Contains(md, "# Work") || !strings.Contains(md, "## Archive (1)") || !strings.Contains(md, "ship") {
+		t.Fatalf("markdown:\n%s", md)
+	}
+	if _, err := s.Boards[0].ColumnIndex("Doing"); err != nil {
+		t.Fatal(err)
+	}
+	if i, err := s.Boards[0].ColumnIndex("2"); err != nil || i != 1 {
+		t.Fatalf("index %d %v", i, err)
+	}
+}
+
+func TestDeleteCards(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if err := s.AddCard(0, 0, Card{Content: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteCards(0, [][2]int{{0, 0}, {0, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Boards[0].Columns[0].Cards
+	if len(got) != 1 || got[0].Content != "b" {
+		t.Fatalf("left: %+v", got)
+	}
+}
+
 func TestFlushWritesOncePerSession(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data")

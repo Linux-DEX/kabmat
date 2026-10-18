@@ -4,15 +4,25 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/Linux-DEX/kabmat/internal/store"
 	"github.com/Linux-DEX/kabmat/internal/tui"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
-	path, backup, err := store.Paths()
+	args, pathFlag, err := splitPath(os.Args[1:])
+	if err != nil {
+		fail(err)
+	}
+	var path, backup string
+	if pathFlag != "" {
+		path, backup, err = store.DataPaths(pathFlag)
+	} else {
+		path, backup, err = store.Paths()
+	}
 	if err != nil {
 		fail(err)
 	}
@@ -20,7 +30,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	start, open, err := applyArgs(os.Args[1:], boards, os.Stdout)
+	start, open, err := applyArgs(args, boards, os.Stdout)
 	if flushErr := boards.Flush(); flushErr != nil && err == nil {
 		err = flushErr
 	}
@@ -35,10 +45,37 @@ func main() {
 	}
 }
 
+func splitPath(args []string) ([]string, string, error) {
+	var rest []string
+	path := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] != "-f" && args[i] != "--file" {
+			rest = append(rest, args[i])
+			continue
+		}
+		if i+1 >= len(args) {
+			return nil, "", fmt.Errorf("not enough arguments for option `%s`", args[i])
+		}
+		i++
+		path = args[i]
+	}
+	return rest, path, nil
+}
+
 func applyArgs(args []string, s *store.Store, w io.Writer) (bool, string, error) {
 	tuiOn := true
 	open := ""
+	kanban := false
+	created := false
+	column := ""
 	var adds []string
+	export := ""
+	exportSet := false
+	for _, a := range args {
+		if a == "-T" || a == "--template" {
+			kanban = true
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		value := func() (string, error) {
@@ -65,8 +102,29 @@ func applyArgs(args []string, s *store.Store, w io.Writer) (bool, string, error)
 			if err != nil {
 				return false, "", err
 			}
-			if err := s.CreateBoard(name); err != nil {
+			var errCreate error
+			if kanban {
+				errCreate = s.CreateKanban(name)
+			} else {
+				errCreate = s.CreateBoard(name)
+			}
+			if errCreate != nil {
+				return false, "", errCreate
+			}
+			created = true
+		case "-C", "--column":
+			name, err := value()
+			if err != nil {
 				return false, "", err
+			}
+			column = name
+		case "-T", "--template":
+		case "-x", "--export":
+			exportSet = true
+			tuiOn = false
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				export = args[i]
 			}
 		case "-o", "--open":
 			name, err := value()
@@ -100,13 +158,38 @@ func applyArgs(args []string, s *store.Store, w io.Writer) (bool, string, error)
 			return false, "", fmt.Errorf("unknown option `%s`", a)
 		}
 	}
-	if err := addCards(s, open, adds); err != nil {
+	if kanban && !created {
+		return false, "", fmt.Errorf("--template needs -c")
+	}
+	if err := addCards(s, open, column, adds); err != nil {
 		return false, "", err
+	}
+	if exportSet {
+		if err := writeExport(s, open, export, w); err != nil {
+			return false, "", err
+		}
 	}
 	return tuiOn, open, nil
 }
 
-func addCards(s *store.Store, open string, texts []string) error {
+func writeExport(s *store.Store, open, path string, w io.Writer) error {
+	boards := s.Boards
+	if open != "" {
+		i, err := s.Index(open)
+		if err != nil {
+			return err
+		}
+		boards = s.Boards[i : i+1]
+	}
+	text := store.Markdown(boards)
+	if path == "" {
+		fmt.Fprint(w, text)
+		return nil
+	}
+	return os.WriteFile(path, []byte(text), 0o600)
+}
+
+func addCards(s *store.Store, open, column string, texts []string) error {
 	if len(texts) == 0 {
 		return nil
 	}
@@ -127,8 +210,16 @@ func addCards(s *store.Store, open string, texts []string) error {
 	if len(s.Boards[bi].Columns) == 0 {
 		return fmt.Errorf("board %q has no columns", open)
 	}
+	ci := 0
+	if column != "" {
+		var err error
+		ci, err = s.Boards[bi].ColumnIndex(column)
+		if err != nil {
+			return err
+		}
+	}
 	for _, text := range texts {
-		if err := s.AddCard(bi, 0, store.Card{Content: text}); err != nil {
+		if err := s.AddCard(bi, ci, store.Card{Content: text}); err != nil {
 			return err
 		}
 	}
@@ -147,9 +238,13 @@ Options:
 
   -l, --list              list all boards
   -c, --create <name>     create a new board with the name <name>
+  -T, --template          with -c, start from Todo / Doing / Done
   -o, --open <name>       open board with name <name>
-  -a, --add <text>        append a card to the first column and exit
+  -a, --add <text>        append a card and exit
+  -C, --column <name>     with -a, column title or 1-based index
   -d, --delete <name>     delete board with name <name>
+  -x, --export [file]     write a Markdown snapshot (stdout if no file)
+  -f, --file <path>       board file (or set KABMAT_DATA)
 
   -t, --text              disable tui
   -b, --card-at-bottom    when moving cards between columns, put them at the bottom

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -36,11 +37,18 @@ type Card struct {
 	Description string
 	Checklist   []ChecklistItem
 	Subtasks    []Subtask
+	Priority    int      // 0, 1 (!), 2 (!!)
+	Due         string   // YYYY-MM-DD
+	Tags        []string // stored without '#'
+	Moved       string   // YYYY-MM-DD, set when the card is created or changes column
 }
 
 type Column struct {
-	Title string
-	Cards []Card
+	Title   string
+	Cards   []Card
+	WIP     int  // 0 means no limit
+	Gate    bool // entering requires a finished checklist
+	Archive bool
 }
 
 type Board struct {
@@ -64,6 +72,9 @@ type Store struct {
 }
 
 func Paths() (string, string, error) {
+	if p := os.Getenv("KABMAT_DATA"); p != "" {
+		return DataPaths(p)
+	}
 	base := os.Getenv("XDG_DATA_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -74,6 +85,32 @@ func Paths() (string, string, error) {
 	}
 	dir := filepath.Join(base, "kabmat")
 	return filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"), nil
+}
+
+// DataPaths is the board file and its sibling backup for a custom location.
+func DataPaths(path string) (string, string, error) {
+	path, err := expandHome(path)
+	if err != nil {
+		return "", "", err
+	}
+	if path == "" {
+		return "", "", errors.New("data path is empty")
+	}
+	return path, path + "_bkp", nil
+}
+
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 func Load(path, backup string) (*Store, error) {
@@ -134,7 +171,12 @@ func parse(data string) ([]Board, error) {
 			if !readingCard {
 				return nil, fmt.Errorf("[line %d] reading a checklist item without a card", n)
 			}
-			item, err := parseCheck(line[len(indentCheck):])
+			raw := line[len(indentCheck):]
+			if strings.HasPrefix(raw, "@") {
+				applyCardMeta(lastCard(boards), raw[1:])
+				break
+			}
+			item, err := parseCheck(raw)
 			if err != nil {
 				return nil, fmt.Errorf("[line %d] %w", n, err)
 			}
@@ -153,9 +195,7 @@ func parse(data string) ([]Board, error) {
 			if !readingBoard {
 				return nil, fmt.Errorf("[line %d] reading a column without a board", n)
 			}
-			boards[len(boards)-1].Columns = append(boards[len(boards)-1].Columns, Column{
-				Title: strings.TrimSpace(line),
-			})
+			boards[len(boards)-1].Columns = append(boards[len(boards)-1].Columns, parseColumnLine(line))
 			readingColumn = true
 			readingCard = false
 		default:
@@ -177,6 +217,137 @@ func parse(data string) ([]Board, error) {
 		}
 	}
 	return boards, nil
+}
+
+func parseColumnLine(line string) Column {
+	title := strings.TrimSpace(line)
+	i := strings.LastIndex(title, " {")
+	if i < 0 || !strings.HasSuffix(title, "}") {
+		return Column{Title: title}
+	}
+	name := strings.TrimSpace(title[:i])
+	if name == "" {
+		return Column{Title: title}
+	}
+	col := Column{Title: name}
+	for _, part := range strings.Split(title[i+2:len(title)-1], ",") {
+		part = strings.TrimSpace(part)
+		switch {
+		case part == "check":
+			col.Gate = true
+		case part == "archive":
+			col.Archive = true
+		case strings.HasPrefix(part, "wip:"):
+			n, err := strconv.Atoi(strings.TrimPrefix(part, "wip:"))
+			if err != nil || n <= 0 {
+				return Column{Title: title}
+			}
+			col.WIP = n
+		default:
+			return Column{Title: title}
+		}
+	}
+	return col
+}
+
+func columnLabel(col Column) string {
+	var flags []string
+	if col.WIP > 0 {
+		flags = append(flags, "wip:"+strconv.Itoa(col.WIP))
+	}
+	if col.Gate {
+		flags = append(flags, "check")
+	}
+	if col.Archive {
+		flags = append(flags, "archive")
+	}
+	if len(flags) == 0 {
+		return col.Title
+	}
+	return col.Title + " {" + strings.Join(flags, ",") + "}"
+}
+
+func applyCardMeta(card *Card, raw string) {
+	for _, f := range strings.Fields(raw) {
+		k, v, ok := strings.Cut(f, ":")
+		if !ok || v == "" {
+			continue
+		}
+		switch k {
+		case "pri":
+			n, err := strconv.Atoi(v)
+			if err == nil && n > card.Priority {
+				if n > 2 {
+					n = 2
+				}
+				card.Priority = n
+			}
+		case "due":
+			if _, err := time.Parse("2006-01-02", v); err == nil {
+				card.Due = v
+			}
+		case "tag":
+			if tag, ok := cleanTag(v); ok {
+				card.Tags = appendTag(card.Tags, tag)
+			}
+		case "moved":
+			if _, err := time.Parse("2006-01-02", v); err == nil {
+				card.Moved = v
+			}
+		}
+	}
+}
+
+func cleanTag(s string) (string, bool) {
+	s = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "#")
+	if s == "" || strings.ContainsAny(s, " \t{},") {
+		return "", false
+	}
+	return s, true
+}
+
+func appendTag(tags []string, tag string) []string {
+	for _, t := range tags {
+		if t == tag {
+			return tags
+		}
+	}
+	return append(tags, tag)
+}
+
+// ParseTags splits "#work, home" into unique tags.
+func ParseTags(s string) []string {
+	s = strings.ReplaceAll(s, ",", " ")
+	var out []string
+	for _, p := range strings.Fields(s) {
+		if tag, ok := cleanTag(p); ok {
+			out = appendTag(out, tag)
+		}
+	}
+	return out
+}
+
+func today() string {
+	return time.Now().Format("2006-01-02")
+}
+
+func checklistDone(card Card) bool {
+	for _, item := range card.Checklist {
+		if !item.Done {
+			return false
+		}
+	}
+	return true
+}
+
+func (col Column) admit(card Card) error {
+	if col.WIP > 0 && len(col.Cards) >= col.WIP {
+		return fmt.Errorf("%s is at its WIP limit (%d)", col.Title, col.WIP)
+	}
+	if col.Gate && !checklistDone(card) {
+		return fmt.Errorf("finish the checklist before moving into %s", col.Title)
+	}
+	return nil
 }
 
 func parseCheck(raw string) (ChecklistItem, error) {
@@ -220,12 +391,13 @@ func encode(boards []Board) string {
 		b.WriteByte('\n')
 		for _, col := range board.Columns {
 			b.WriteString(indentColumn)
-			b.WriteString(col.Title)
+			b.WriteString(columnLabel(col))
 			b.WriteByte('\n')
 			for _, card := range col.Cards {
 				b.WriteString(indentCard)
 				b.WriteString(card.Content)
 				b.WriteByte('\n')
+				writeCardMeta(&b, card)
 				for _, item := range card.Checklist {
 					mark := "-"
 					if item.Done {
@@ -263,6 +435,29 @@ func encode(boards []Board) string {
 	return b.String()
 }
 
+func writeCardMeta(b *strings.Builder, card Card) {
+	var parts []string
+	if card.Priority > 0 {
+		parts = append(parts, "pri:"+strconv.Itoa(card.Priority))
+	}
+	if card.Due != "" {
+		parts = append(parts, "due:"+card.Due)
+	}
+	for _, tag := range card.Tags {
+		parts = append(parts, "tag:"+tag)
+	}
+	if card.Moved != "" {
+		parts = append(parts, "moved:"+card.Moved)
+	}
+	if len(parts) == 0 {
+		return
+	}
+	b.WriteString(indentCheck)
+	b.WriteByte('@')
+	b.WriteString(strings.Join(parts, " "))
+	b.WriteByte('\n')
+}
+
 func (s *Store) Index(name string) (int, error) {
 	for i := range s.Boards {
 		if s.Boards[i].Name == name {
@@ -293,6 +488,19 @@ func (s *Store) nameTaken(name string, except int) bool {
 }
 
 func (s *Store) CreateBoard(name string) error {
+	return s.create(name, nil)
+}
+
+// CreateKanban makes a board with Todo, Doing, and a Done column that requires a finished checklist.
+func (s *Store) CreateKanban(name string) error {
+	return s.create(name, []Column{
+		{Title: "Todo"},
+		{Title: "Doing"},
+		{Title: "Done", Gate: true},
+	})
+}
+
+func (s *Store) create(name string, cols []Column) error {
 	name, err := validBoardName(name)
 	if err != nil {
 		return err
@@ -300,7 +508,7 @@ func (s *Store) CreateBoard(name string) error {
 	if s.nameTaken(name, -1) {
 		return fmt.Errorf("board %q already exists", name)
 	}
-	s.Boards = append(s.Boards, Board{Name: name})
+	s.Boards = append(s.Boards, Board{Name: name, Columns: cols})
 	return s.save()
 }
 
@@ -381,7 +589,20 @@ func (s *Store) InsertCard(bi, ci, at int, card Card) error {
 	if card.Content == "" {
 		return errEmptyName
 	}
+	card.Tags = ParseTags(strings.Join(card.Tags, " "))
+	if card.Priority < 0 {
+		card.Priority = 0
+	}
+	if card.Priority > 2 {
+		card.Priority = 2
+	}
 	col := &s.Boards[bi].Columns[ci]
+	if err := col.admit(card); err != nil {
+		return err
+	}
+	if card.Moved == "" {
+		card.Moved = today()
+	}
 	if at < 0 || at > len(col.Cards) {
 		at = len(col.Cards)
 	}
@@ -396,8 +617,51 @@ func (s *Store) UpdateCard(bi, ci, cardi int, card Card) error {
 	if card.Content == "" {
 		return errEmptyName
 	}
+	card.Tags = ParseTags(strings.Join(card.Tags, " "))
+	if card.Priority < 0 {
+		card.Priority = 0
+	}
+	if card.Priority > 2 {
+		card.Priority = 2
+	}
+	prev := s.Boards[bi].Columns[ci].Cards[cardi]
+	if card.Moved == "" {
+		card.Moved = prev.Moved
+	}
 	s.Boards[bi].Columns[ci].Cards[cardi] = card
 	return s.save()
+}
+
+func (s *Store) SetWIP(bi, ci, n int) error {
+	if n < 0 {
+		return errors.New("WIP limit can't be negative")
+	}
+	s.Boards[bi].Columns[ci].WIP = n
+	return s.save()
+}
+
+func (s *Store) ToggleGate(bi, ci int) (bool, error) {
+	col := &s.Boards[bi].Columns[ci]
+	col.Gate = !col.Gate
+	return col.Gate, s.save()
+}
+
+// ColumnIndex matches a column title or a 1-based index.
+func (b Board) ColumnIndex(name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, errors.New("column name is empty")
+	}
+	for i := range b.Columns {
+		if b.Columns[i].Title == name {
+			return i, nil
+		}
+	}
+	n, err := strconv.Atoi(name)
+	if err == nil && n >= 1 && n <= len(b.Columns) {
+		return n - 1, nil
+	}
+	return 0, fmt.Errorf("no column %q", name)
 }
 
 func (s *Store) DeleteCard(bi, ci, cardi int) error {
@@ -421,18 +685,108 @@ func (s *Store) MoveCardHoriz(bi, src, cardi, dir int) (bool, error) {
 }
 
 func (s *Store) MoveCardTo(bi, src, cardi, dst int) (bool, error) {
+	if err := s.relocate(bi, src, cardi, dst); err != nil {
+		if errors.Is(err, errNoMove) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, s.save()
+}
+
+var errNoMove = errors.New("card stays")
+
+// ErrArchived is returned when the card is already in an archive column.
+var ErrArchived = errors.New("already archived")
+
+func (s *Store) relocate(bi, src, cardi, dst int) error {
 	cols := s.Boards[bi].Columns
 	if src == dst || src < 0 || dst < 0 || src >= len(cols) || dst >= len(cols) || cardi < 0 || cardi >= len(cols[src].Cards) {
-		return false, nil
+		return errNoMove
 	}
 	card := cols[src].Cards[cardi]
+	if err := cols[dst].admit(card); err != nil {
+		return err
+	}
+	card.Moved = today()
 	cols[src].Cards = append(cols[src].Cards[:cardi], cols[src].Cards[cardi+1:]...)
 	if s.CardAtBottom {
 		cols[dst].Cards = append(cols[dst].Cards, card)
 	} else {
 		cols[dst].Cards = append([]Card{card}, cols[dst].Cards...)
 	}
-	return true, s.save()
+	return nil
+}
+
+// ArchiveCard moves a card into the board's archive column, creating one if needed.
+func (s *Store) ArchiveCard(bi, src, cardi int) (int, error) {
+	cols := s.Boards[bi].Columns
+	if src < 0 || src >= len(cols) || cardi < 0 || cardi >= len(cols[src].Cards) {
+		return 0, errNoMove
+	}
+	if cols[src].Archive {
+		return src, ErrArchived
+	}
+	dst := -1
+	for i := range cols {
+		if cols[i].Archive {
+			dst = i
+			break
+		}
+	}
+	if dst < 0 {
+		s.Boards[bi].Columns = append(s.Boards[bi].Columns, Column{Title: "Archive", Archive: true})
+		dst = len(s.Boards[bi].Columns) - 1
+	}
+	if err := s.relocate(bi, src, cardi, dst); err != nil {
+		return dst, err
+	}
+	return dst, s.save()
+}
+
+// ApplyCards updates each [column, card] and writes one undo step.
+func (s *Store) ApplyCards(bi int, picks [][2]int, fn func(*Card)) error {
+	if len(picks) == 0 {
+		return nil
+	}
+	cols := s.Boards[bi].Columns
+	for _, p := range picks {
+		if p[0] < 0 || p[0] >= len(cols) || p[1] < 0 || p[1] >= len(cols[p[0]].Cards) {
+			continue
+		}
+		fn(&s.Boards[bi].Columns[p[0]].Cards[p[1]])
+	}
+	return s.save()
+}
+
+// DeleteCards removes each [column, card]. Higher indexes in a column go first.
+func (s *Store) DeleteCards(bi int, picks [][2]int) error {
+	if len(picks) == 0 {
+		return nil
+	}
+	ordered := append([][2]int(nil), picks...)
+	sortPicks(ordered)
+	cols := s.Boards[bi].Columns
+	seen := map[[2]int]bool{}
+	for _, p := range ordered {
+		if seen[p] || p[0] < 0 || p[0] >= len(cols) || p[1] < 0 || p[1] >= len(s.Boards[bi].Columns[p[0]].Cards) {
+			continue
+		}
+		seen[p] = true
+		cards := s.Boards[bi].Columns[p[0]].Cards
+		s.Boards[bi].Columns[p[0]].Cards = append(cards[:p[1]], cards[p[1]+1:]...)
+	}
+	return s.save()
+}
+
+func sortPicks(picks [][2]int) {
+	for i := 1; i < len(picks); i++ {
+		j := i
+		for j > 0 && (picks[j][0] < picks[j-1][0] || picks[j][0] == picks[j-1][0] && picks[j][1] > picks[j-1][1]) {
+			picks[j], picks[j-1] = picks[j-1], picks[j]
+			j--
+		}
+	}
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -539,6 +893,90 @@ func LoadPlace(dataPath string) (Place, error) {
 func SavePlace(dataPath string, p Place) error {
 	data := p.Board + "\n" + strconv.Itoa(p.Col) + "\n" + strconv.Itoa(p.Card) + "\n"
 	return writeFileAtomic(placePath(dataPath), []byte(data), 0o600)
+}
+
+// Markdown is a board snapshot for sharing. It leaves out last-moved dates.
+func Markdown(boards []Board) string {
+	var b strings.Builder
+	for i, board := range boards {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("# ")
+		b.WriteString(board.Name)
+		b.WriteByte('\n')
+		for _, col := range board.Columns {
+			b.WriteString("\n## ")
+			b.WriteString(col.Title)
+			b.WriteString(" (")
+			b.WriteString(strconv.Itoa(len(col.Cards)))
+			if col.WIP > 0 {
+				b.WriteByte('/')
+				b.WriteString(strconv.Itoa(col.WIP))
+			}
+			b.WriteByte(')')
+			if col.Gate {
+				b.WriteString(" · checklist")
+			}
+			if col.Archive {
+				b.WriteString(" · archive")
+			}
+			b.WriteByte('\n')
+			for _, card := range col.Cards {
+				b.WriteString("\n- ")
+				switch card.Priority {
+				case 1:
+					b.WriteString("! ")
+				case 2:
+					b.WriteString("!! ")
+				}
+				b.WriteString(card.Content)
+				for _, tag := range card.Tags {
+					b.WriteString(" #")
+					b.WriteString(tag)
+				}
+				if card.Due != "" {
+					b.WriteString(" · due ")
+					b.WriteString(card.Due)
+				}
+				b.WriteByte('\n')
+				if card.Description != "" {
+					for _, line := range strings.Split(card.Description, "\n") {
+						b.WriteString("  ")
+						b.WriteString(line)
+						b.WriteByte('\n')
+					}
+				}
+				for _, item := range card.Checklist {
+					b.WriteString("  - [")
+					if item.Done {
+						b.WriteByte('x')
+					} else {
+						b.WriteByte(' ')
+					}
+					b.WriteString("] ")
+					b.WriteString(item.Content)
+					b.WriteByte('\n')
+				}
+				for _, sub := range card.Subtasks {
+					b.WriteString("  - ")
+					if sub.Done {
+						b.WriteString("done ")
+					}
+					b.WriteString(sub.Content)
+					b.WriteByte('\n')
+					if sub.Description != "" {
+						for _, line := range strings.Split(sub.Description, "\n") {
+							b.WriteString("    ")
+							b.WriteString(line)
+							b.WriteByte('\n')
+						}
+					}
+				}
+			}
+		}
+	}
+	return b.String()
 }
 
 func (s *Store) Undo() (bool, error) { return s.step(&s.undo, &s.redo) }

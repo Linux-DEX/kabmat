@@ -1,13 +1,14 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Linux-DEX/kabmat/internal/store"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/Linux-DEX/kabmat/internal/store"
 )
 
 func TestBoardFlow(t *testing.T) {
@@ -256,6 +257,91 @@ func TestMoveClearAndResume(t *testing.T) {
 	resumed, err := newModel(s, "")
 	if err != nil || resumed.screen != screenBoard || resumed.curBoard().Name != "Work" || resumed.col != 1 {
 		t.Fatalf("resume screen=%d col=%d err=%v", resumed.screen, resumed.col, err)
+	}
+}
+
+func TestSignals(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil || s.AddColumn(0, "Done") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{
+		Content:     "ship",
+		Description: "see https://example.com/board.",
+		Checklist:   []store.ChecklistItem{{Content: "box"}},
+		Moved:       "2020-01-01",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 120, 40
+	press(m, "!", "!")
+	if s.Boards[0].Columns[0].Cards[0].Priority != 2 {
+		t.Fatalf("priority %d", s.Boards[0].Columns[0].Cards[0].Priority)
+	}
+	view := m.View()
+	age := fmt.Sprintf("%dd", daysSince("2020-01-01"))
+	if !strings.Contains(view, "!!") || !strings.Contains(view, "Todo 2") || !strings.Contains(view, "2 cards") || !strings.Contains(view, age) {
+		t.Fatalf("header/priority/age %s:\n%s", age, view)
+	}
+	press(m, "t", "i")
+	typeRunes(m, "#work")
+	press(m, "enter")
+	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 1 || tags[0] != "work" || !strings.Contains(m.View(), "#work") {
+		t.Fatalf("tags %+v\n%s", tags, m.View())
+	}
+	press(m, "T", "i")
+	typeRunes(m, "2020-01-02")
+	press(m, "enter")
+	if s.Boards[0].Columns[0].Cards[0].Due != "2020-01-02" || !strings.Contains(m.View(), "01-02") {
+		t.Fatalf("due %q\n%s", s.Boards[0].Columns[0].Cards[0].Due, m.View())
+	}
+	press(m, "w", "i")
+	typeRunes(m, "1")
+	press(m, "enter")
+	if !strings.Contains(m.View(), "2/1!") {
+		t.Fatalf("wip:\n%s", m.View())
+	}
+	press(m, "W")
+	if !s.Boards[0].Columns[0].Gate || !strings.Contains(m.View(), "Todo*") {
+		t.Fatalf("gate:\n%s", m.View())
+	}
+	if got := firstURL("see https://example.com/board."); got != "https://example.com/board" {
+		t.Fatal(got)
+	}
+	press(m, "space", "j", "space", "d", "y")
+	if len(s.Boards[0].Columns[0].Cards) != 0 {
+		t.Fatalf("bulk delete: %+v", s.Boards[0].Columns[0].Cards)
+	}
+	if _, err := s.ToggleGate(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "keep", Checklist: []store.ChecklistItem{{Content: "open"}}}); err != nil {
+		t.Fatal(err)
+	}
+	m.picked = nil
+	press(m, "A", "v")
+	view = m.View()
+	if strings.Contains(view, "keep") || !strings.Contains(view, "1 archived") {
+		t.Fatalf("hide archive:\n%s", view)
+	}
+	press(m, "v")
+	if !strings.Contains(m.View(), "keep") || !strings.Contains(m.View(), "Archive") {
+		t.Fatal(m.View())
+	}
+	due, err := parseDue("+0")
+	if err != nil || due == "" {
+		t.Fatal(err, due)
 	}
 }
 
