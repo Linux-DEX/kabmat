@@ -1347,9 +1347,13 @@ func (m *model) columnBox(ci, w, h int) string {
 		}
 		lines = append(lines, mutedStyle.Render(msg))
 	}
-	for i := start; i < len(ids) && len(lines) <= cardRoom; i++ {
-		for _, line := range ensure(i) {
-			if len(lines) > cardRoom {
+	for i := start; i < len(ids); i++ {
+		block := ensure(i)
+		if i > start && len(lines)-1+len(block) > cardRoom {
+			break // next card doesn't fit whole, skip it
+		}
+		for _, line := range block {
+			if len(lines)-1 >= cardRoom {
 				break
 			}
 			lines = append(lines, line)
@@ -1594,28 +1598,37 @@ func cardLabel(card store.Card) string {
 }
 
 func cardLines(card store.Card, width int, selected, fold bool) []string {
-	title := fit(cardLabel(card), width)
+	inner := max(1, width-2) // border takes 1 column on each side
+
+	title := fit(cardLabel(card), inner)
 	if selected {
-		title = selStyle.Width(width).Render(title)
+		title = titleStyle.Render(title)
 	}
 	lines := []string{title}
+
 	if selected {
 		if preview := firstLine(card.Description); preview != "" {
-			lines = append(lines, mutedStyle.Render(fit(preview, width)))
+			lines = append(lines, mutedStyle.Render(fit(preview, inner)))
 		}
 	}
+
 	if fold && !selected && len(card.Subtasks) > 0 {
-		lines = append(lines, fit(fmt.Sprintf("  %d subtasks", len(card.Subtasks)), width))
-		return lines
-	}
-	for _, sub := range card.Subtasks {
-		mark := "  ▸ "
-		if sub.Done {
-			mark = "  ✓ "
+		lines = append(lines, fit(fmt.Sprintf("  %d subtasks", len(card.Subtasks)), inner))
+	} else {
+		for _, sub := range card.Subtasks {
+			mark := "  ▸ "
+			if sub.Done {
+				mark = "  ✓ "
+			}
+			lines = append(lines, fit(mark+sub.Content, inner))
 		}
-		lines = append(lines, fit(mark+sub.Content, width))
 	}
-	return lines
+
+	st := cardStyle
+	if selected {
+		st = cardOnStyle
+	}
+	return strings.Split(st.Width(inner).Render(strings.Join(lines, "\n")), "\n")
 }
 
 func firstLine(s string) string {
@@ -1739,14 +1752,16 @@ func shortName(s string) string {
 }
 
 var (
-	barStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
-	modeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("33"))
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	selStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
-	mutedStyle = lipgloss.NewStyle().Faint(true)
-	doneStyle  = lipgloss.NewStyle().Faint(true).Strikethrough(true)
-	boxStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	boxOnStyle = boxStyle.BorderForeground(lipgloss.Color("33"))
+	barStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
+	modeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("33"))
+	titleStyle  = lipgloss.NewStyle().Bold(true)
+	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
+	mutedStyle  = lipgloss.NewStyle().Faint(true)
+	doneStyle   = lipgloss.NewStyle().Faint(true).Strikethrough(true)
+	boxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	boxOnStyle  = boxStyle.BorderForeground(lipgloss.Color("33"))
+	cardStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
+	cardOnStyle = cardStyle.BorderForeground(lipgloss.Color("33"))
 )
 
 var helpLines = []string{
