@@ -69,7 +69,7 @@ Press `?` inside the TUI for the full key list.
 | `A` | move the card into an Archive column (created if needed) instead of deleting it |
 | `v` | hide or show archive columns. The header keeps an archived count |
 | `!` | cycle priority: none, `!`, `!!` |
-| `t` | set tags (`#work`). `/#work` and `f` match them |
+| `t` | filter tags by typing, Space toggles a match, Enter saves. Enter on no match adds the typed tag. `/#work` and `f` still find them |
 | `T` | set a due date (`YYYY-MM-DD`) or snooze (`+3`). Overdue dates are red, today is gold |
 | `o` | open the first http(s) link in the title or description |
 | `X` | clear finished checklist items on the focused card |

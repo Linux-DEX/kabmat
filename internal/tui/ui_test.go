@@ -295,8 +295,8 @@ func TestSignals(t *testing.T) {
 	if !strings.Contains(view, "!!") || !strings.Contains(view, "Todo 2") || !strings.Contains(view, "2 cards") || !strings.Contains(view, age) {
 		t.Fatalf("header/priority/age %s:\n%s", age, view)
 	}
-	press(m, "t", "i")
-	typeRunes(m, "#work")
+	press(m, "t")
+	typeRunes(m, "work")
 	press(m, "enter")
 	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 1 || tags[0] != "work" || !strings.Contains(m.View(), "#work") {
 		t.Fatalf("tags %+v\n%s", tags, m.View())
@@ -479,6 +479,71 @@ func TestCardEditModeBadge(t *testing.T) {
 	press(m, "esc", "tab", "i")
 	if !m.edit.desc.insert || !strings.Contains(m.dialog(), "INSERT") {
 		t.Fatalf("desc insert focus=%d\n%s", m.edit.focus, m.dialog())
+	}
+}
+
+func TestTagPicker(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship", Tags: []string{"legacy"}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 30
+	press(m, "t")
+	view := m.dialog()
+	for _, tag := range []string{"#bug", "#ci/cd", "#cloud", "#research", "#chore", "#legacy"} {
+		if !strings.Contains(view, tag) {
+			t.Fatalf("missing %s\n%s", tag, view)
+		}
+	}
+	if !strings.Contains(view, "[x] #legacy") {
+		t.Fatalf("legacy should start selected\n%s", view)
+	}
+	typeRunes(m, "dep")
+	filtered := m.dialog()
+	if strings.Contains(filtered, "#bug") || strings.Contains(filtered, "#devops") || !strings.Contains(filtered, "#deployment") {
+		t.Fatalf("filter\n%s", filtered)
+	}
+	press(m, "esc", "e", "t")
+	if m.top() != layerTag {
+		t.Fatalf("layer %d", m.top())
+	}
+	typeRunes(m, "legacy")
+	press(m, "space")
+	for range len("legacy") {
+		press(m, "backspace")
+	}
+	typeRunes(m, "bug")
+	press(m, "space", "enter")
+	if got := m.edit.tags; len(got) != 1 || got[0] != "bug" {
+		t.Fatalf("card edit tags %+v", got)
+	}
+	if len(s.Boards[0].Columns[0].Cards[0].Tags) != 1 || s.Boards[0].Columns[0].Cards[0].Tags[0] != "legacy" {
+		t.Fatal("store changed before save")
+	}
+	press(m, "enter")
+	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 1 || tags[0] != "bug" {
+		t.Fatalf("saved %+v", tags)
+	}
+	press(m, "t")
+	typeRunes(m, "spike")
+	if !strings.Contains(m.dialog(), "enter adds #spike") {
+		t.Fatalf("add row\n%s", m.dialog())
+	}
+	press(m, "enter")
+	tags := s.Boards[0].Columns[0].Cards[0].Tags
+	if len(tags) != 2 || tags[0] != "bug" || tags[1] != "spike" || !strings.Contains(m.View(), "#spike") {
+		t.Fatalf("custom %+v\n%s", tags, m.View())
 	}
 }
 
