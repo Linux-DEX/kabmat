@@ -168,6 +168,16 @@ func Load() (Config, error) {
 	}
 	cfg := Default()
 	cfg.Path = path
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return Config{}, err
+	}
+	if info.Size() > 1<<20 {
+		return Config{}, fmt.Errorf("%s: config is larger than 1MB", path)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -250,6 +260,9 @@ func isComment(line, section string) bool {
 func parseTop(line string, cfg *Config) error {
 	fields := strings.Fields(line)
 	if len(fields) == 2 && fields[0] == "theme" {
+		if !ValidThemeName(fields[1]) {
+			return fmt.Errorf("bad theme name %q", fields[1])
+		}
 		cfg.Theme = fields[1]
 		return nil
 	}
@@ -258,7 +271,7 @@ func parseTop(line string, cfg *Config) error {
 
 func parseTag(line string, cfg *Config) error {
 	tag := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(line)), "#")
-	if tag == "" || strings.ContainsAny(tag, " \t{},") {
+	if !ValidTag(tag) {
 		return fmt.Errorf("bad tag %q", line)
 	}
 	for _, have := range cfg.Tags {
@@ -285,6 +298,9 @@ func parseKeys(line string, actions map[string][]string, index *map[string]strin
 	var next []string
 	for _, key := range keys {
 		key = normKey(key)
+		if !validKey(key) {
+			return fmt.Errorf("bad key %q", key)
+		}
 		if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
 			return fmt.Errorf("digit %s is a count, not a binding", key)
 		}
@@ -322,6 +338,9 @@ func validColor(s string) bool {
 		}
 		return true
 	}
+	if len(s) > 3 {
+		return false
+	}
 	n := 0
 	for _, c := range s {
 		if c < '0' || c > '9' {
@@ -330,6 +349,53 @@ func validColor(s string) bool {
 		n = n*10 + int(c-'0')
 	}
 	return s != "" && n <= 255
+}
+
+// ValidThemeName is a short token safe to write as `theme name` and `[theme.name]`.
+func ValidThemeName(name string) bool {
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for i, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case (c == '-' || c == '_') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidTag is a short label: letters, digits, and / - _ . after the first character.
+func ValidTag(tag string) bool {
+	if tag == "" || len(tag) > 32 || strings.Contains(tag, "..") {
+		return false
+	}
+	for i, c := range tag {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '/' || c == '-' || c == '_' || c == '.':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validKey(key string) bool {
+	if key == "" || len(key) > 32 {
+		return false
+	}
+	for _, c := range key {
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func normKey(key string) string {
@@ -387,10 +453,45 @@ func Save(c Config) error {
 	if c.Path == "" {
 		return fmt.Errorf("config path is empty")
 	}
+	if !ValidThemeName(c.Theme) {
+		return fmt.Errorf("bad theme name %q", c.Theme)
+	}
+	for name := range c.Themes {
+		if !ValidThemeName(name) {
+			return fmt.Errorf("bad theme name %q", name)
+		}
+	}
+	for _, tag := range c.Tags {
+		if !ValidTag(tag) {
+			return fmt.Errorf("bad tag %q", tag)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(c.Path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(c.Path, []byte(c.encode()), 0o600)
+	// Rename replaces a symlink instead of writing through it.
+	return writeAtomic(c.Path, []byte(c.encode()), 0o600)
+}
+
+func writeAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".kabmat-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 func (c Config) encode() string {

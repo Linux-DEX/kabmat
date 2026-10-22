@@ -59,6 +59,31 @@ func TestParseAndSave(t *testing.T) {
 	}
 }
 
+func TestSaveDoesNotFollowSymlink(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "config")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Path = link
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(secret)
+	if err != nil || string(body) != "secret" {
+		t.Fatalf("symlink target changed: %q %v", body, err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("config path is still a symlink")
+	}
+}
+
 func TestRejectsBadConfig(t *testing.T) {
 	cases := []string{
 		"[nope]\n",
@@ -66,6 +91,10 @@ func TestRejectsBadConfig(t *testing.T) {
 		"[keys.board]\nnew-card 1\n",
 		"[theme.dusk]\naccent nope\n",
 		"[tags]\nbad tag\n",
+		"theme ../x\n",
+		"[theme.dusk]\naccent 99999\n",
+		"[tags]\n../etc\n",
+		"[keys.board]\nquit a\nb\n",
 	}
 	for _, body := range cases {
 		if _, err := parse(body, Default()); err == nil {

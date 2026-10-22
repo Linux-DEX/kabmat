@@ -206,12 +206,19 @@ func parse(data string) ([]Board, error) {
 		}
 	}
 	for i := range boards {
+		boards[i].Name = stripControls(boards[i].Name)
 		for j := range boards[i].Columns {
+			boards[i].Columns[j].Title = stripControls(boards[i].Columns[j].Title)
 			for k := range boards[i].Columns[j].Cards {
 				card := &boards[i].Columns[j].Cards[k]
-				card.Description = strings.TrimSuffix(card.Description, "\n")
+				card.Content = stripControls(card.Content)
+				card.Description = stripControls(strings.TrimSuffix(card.Description, "\n"))
+				for n := range card.Checklist {
+					card.Checklist[n].Content = stripControls(card.Checklist[n].Content)
+				}
 				for s := range card.Subtasks {
-					card.Subtasks[s].Description = strings.TrimSuffix(card.Subtasks[s].Description, "\n")
+					card.Subtasks[s].Content = stripControls(card.Subtasks[s].Content)
+					card.Subtasks[s].Description = stripControls(strings.TrimSuffix(card.Subtasks[s].Description, "\n"))
 				}
 			}
 		}
@@ -300,10 +307,42 @@ func applyCardMeta(card *Card, raw string) {
 
 func cleanTag(s string) (string, bool) {
 	s = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "#")
-	if s == "" || strings.ContainsAny(s, " \t{},") {
+	if !validTag(s) {
 		return "", false
 	}
 	return s, true
+}
+
+// validTag rejects spaces, controls, and terminal escapes. A tag is a short label, not a path.
+func validTag(s string) bool {
+	if s == "" || len(s) > 32 || strings.Contains(s, "..") {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '/' || c == '-' || c == '_' || c == '.':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// stripControls drops terminal control characters from text that will be drawn.
+func stripControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func appendTag(tags []string, tag string) []string {

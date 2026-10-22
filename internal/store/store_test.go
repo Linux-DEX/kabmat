@@ -320,3 +320,16 @@ func TestFlushWritesOncePerSession(t *testing.T) {
 		t.Fatalf("flush: %q %v", raw, err)
 	}
 }
+
+func TestRejectsUnsafeTagsAndControls(t *testing.T) {
+	if tags := ParseTags("#Bug ok ../etc a\x1b[31m b"); len(tags) != 3 || tags[0] != "bug" || tags[1] != "ok" || tags[2] != "b" {
+		t.Fatalf("%v", tags)
+	}
+	boards, err := parse("Work\n Todo\n  hello\x1b[31mworld\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := boards[0].Columns[0].Cards[0].Content; got != "hello[31mworld" || strings.Contains(got, "\x1b") {
+		t.Fatalf("%q", got)
+	}
+}

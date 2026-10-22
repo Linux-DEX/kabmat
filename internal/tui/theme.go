@@ -440,8 +440,8 @@ func (m *model) themeColorKey(key string) {
 
 func (m *model) addScheme(name string) {
 	name = strings.TrimSpace(name)
-	if name == "" || strings.ContainsAny(name, "\n") {
-		m.notice = "theme name is empty"
+	if !config.ValidThemeName(name) {
+		m.notice = "theme name must be letters, digits, - or _"
 		return
 	}
 	for i := range m.schemes {
