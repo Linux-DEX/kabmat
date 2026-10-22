@@ -245,6 +245,7 @@ Options:
   -d, --delete <name>     delete board with name <name>
   -x, --export [file]     write a Markdown snapshot (stdout if no file)
   -f, --file <path>       board file (or set KABMAT_DATA)
+                          config is $XDG_CONFIG_HOME/kabmat/config (or KABMAT_CONFIG)
 
   -t, --text              disable tui
   -b, --card-at-bottom    when moving cards between columns, put them at the bottom

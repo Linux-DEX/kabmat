@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Linux-DEX/kabmat/internal/config"
 	"github.com/Linux-DEX/kabmat/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,14 +57,6 @@ const (
 )
 
 const staleDays = 7
-
-var repeatable = map[string]bool{
-	"j": true, "k": true, "h": true, "l": true,
-	"J": true, "K": true, "n": true, "N": true, "p": true,
-	"[": true, "]": true,
-	"shift+up": true, "shift+down": true,
-	"ctrl+h": true, "ctrl+l": true, "ctrl+p": true, "ctrl+n": true,
-}
 
 type confirmKind int
 
@@ -131,6 +124,7 @@ type model struct {
 	filtering   bool
 	foldSubs    bool
 	seenBoard   bool
+	cfg         config.Config
 	moveSel     int
 	search      string
 	searching   bool
@@ -172,6 +166,11 @@ func newModel(s *store.Store, open string) (*model, error) {
 		foldSubs:     true,
 		themeName:    "linux-dex",
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	m.cfg = cfg
 	m.loadTheme()
 	if open == "" {
 		p, err := store.LoadPlace(s.Path)
@@ -309,47 +308,47 @@ func ctrlBackspaceCSI(msg tea.Msg) bool {
 
 func (m *model) menuKey(key string) {
 	n := len(m.store.Boards)
-	switch key {
-	case "q":
+	switch m.cfg.Action("menu", key) {
+	case "quit":
 		m.quitting = true
-	case "u":
+	case "undo":
 		m.undoRedo(false)
-	case "ctrl+r":
+	case "redo":
 		m.undoRedo(true)
-	case "?":
+	case "help":
 		m.helpOff = 0
 		m.push(layerHelp)
-	case "k":
+	case "up":
 		if n > 0 && m.menuSel > 0 {
 			m.menuSel--
 		}
-	case "j":
+	case "down":
 		if n > 0 && m.menuSel < n-1 {
 			m.menuSel++
 		}
-	case "g":
+	case "first":
 		m.menuSel = 0
-	case "G":
+	case "last":
 		if n > 0 {
 			m.menuSel = n - 1
 		}
-	case "K", "shift+up":
+	case "move-up":
 		m.reorderBoard(-1)
-	case "J", "shift+down":
+	case "move-down":
 		m.reorderBoard(1)
-	case "c":
+	case "new":
 		m.openInput(inputNewBoard, " New Board Name ", "")
-	case "r", "e":
+	case "rename":
 		if n > 0 {
 			m.openInput(inputRenameBoard, " Rename Board ", m.store.Boards[m.menuSel].Name)
 		}
-	case "d":
+	case "delete":
 		if n > 0 {
 			m.confirmKind = confirmDeleteBoard
 			m.confirmMsg = fmt.Sprintf("Delete board %q?", shortName(m.store.Boards[m.menuSel].Name))
 			m.push(layerConfirm)
 		}
-	case "enter":
+	case "open":
 		if n > 0 {
 			m.col = 0
 			m.colScroll = 0
@@ -357,7 +356,7 @@ func (m *model) menuKey(key string) {
 			m.cardScroll = nil
 			m.openBoard(m.menuSel, true)
 		}
-	case "ctrl+t":
+	case "theme":
 		m.openThemes()
 	}
 }
@@ -369,49 +368,49 @@ func (m *model) boardKey(key string) {
 		return
 	}
 	n := len(b.Columns)
-	switch key {
-	case "q":
+	switch m.cfg.Action("board", key) {
+	case "back":
 		if m.returnToMenu {
 			m.screen = screenMenu
 			return
 		}
 		m.quitting = true
-	case "u":
+	case "undo":
 		m.undoRedo(false)
-	case "ctrl+r":
+	case "redo":
 		m.undoRedo(true)
-	case "/":
+	case "search":
 		m.startSearch()
-	case "n":
+	case "find-next":
 		m.findNext(1)
-	case "N":
+	case "find-prev":
 		m.findNext(-1)
-	case "?":
+	case "help":
 		m.helpOff = 0
 		m.push(layerHelp)
-	case "h":
+	case "left":
 		m.stepCol(-1)
-	case "l":
+	case "right":
 		m.stepCol(1)
-	case "k":
+	case "up":
 		m.moveCardFocus(-1)
-	case "j":
+	case "down":
 		m.moveCardFocus(1)
-	case "g":
+	case "first":
 		if ids := m.shownIDs(m.col); len(ids) > 0 {
 			m.growCardSel()
 			m.cardSel[m.col] = ids[0]
 		}
-	case "G":
+	case "last":
 		if ids := m.shownIDs(m.col); len(ids) > 0 {
 			m.growCardSel()
 			m.cardSel[m.col] = ids[len(ids)-1]
 		}
-	case "H":
+	case "move-left":
 		m.shiftCard(-1)
-	case "L":
+	case "move-right":
 		m.shiftCard(1)
-	case "w":
+	case "wip":
 		if n > 0 {
 			cur := ""
 			if b.Columns[m.col].WIP > 0 {
@@ -419,11 +418,11 @@ func (m *model) boardKey(key string) {
 			}
 			m.openInput(inputWIP, " WIP limit (0 clears) ", cur)
 		}
-	case "W":
+	case "gate":
 		m.toggleGate()
-	case "A":
+	case "archive":
 		m.archiveTargets()
-	case "v":
+	case "toggle-archive":
 		m.hideArchive = !m.hideArchive
 		m.snapCol()
 		if m.hideArchive {
@@ -431,80 +430,80 @@ func (m *model) boardKey(key string) {
 		} else {
 			m.notice = "archive shown"
 		}
-	case "!":
+	case "priority":
 		m.cyclePriority()
-	case "esc":
+	case "clear-selection":
 		if len(m.picked) > 0 {
 			m.picked = nil
 			m.notice = "selection cleared"
 		}
-	case " ", "space":
+	case "select":
 		m.togglePick()
-	case "t":
+	case "tags":
 		if len(m.targets()) > 0 {
 			m.openTags()
 		}
-	case "T":
+	case "due":
 		if len(m.targets()) > 0 {
 			m.openDue()
 		}
-	case "o":
+	case "open-link":
 		m.openLink()
-	case "K", "shift+up":
+	case "move-up":
 		m.swapCard(-1)
-	case "J", "shift+down":
+	case "move-down":
 		m.swapCard(1)
-	case "ctrl+h", "ctrl+p":
+	case "column-left":
 		m.shiftColumn(-1)
-	case "ctrl+l", "ctrl+n":
+	case "column-right":
 		m.shiftColumn(1)
-	case "C":
+	case "new-column":
 		m.openInput(inputNewColumn, " New Column Name ", "")
-	case "E":
+	case "rename-column":
 		if n > 0 {
 			m.openInput(inputRenameColumn, " Rename Column ", b.Columns[m.col].Title)
 		}
-	case "D":
+	case "delete-column":
 		if n > 0 {
 			m.confirmKind = confirmDeleteColumn
 			m.confirmMsg = fmt.Sprintf("Delete column %q?", shortName(b.Columns[m.col].Title))
 			m.push(layerConfirm)
 		}
-	case "c":
+	case "new-card":
 		if n > 0 {
 			m.edit = cardEdit{isNew: true, col: m.col, card: -1, content: newField("", false), desc: newField("", true)}
 			m.push(layerCard)
 		}
-	case "e", "enter":
+	case "edit":
 		m.openCard()
-	case "s":
+	case "subtasks":
 		if m.openCard() {
 			m.push(layerSubtasks)
 		}
-	case "d":
+	case "delete":
 		m.confirmDelete()
-	case "y":
+	case "yank":
 		m.yankCard()
-	case "p":
+	case "paste":
 		m.pasteCard()
-	case "Y":
+	case "duplicate":
 		m.duplicateCard()
-	case "f":
+	case "filter":
 		m.toggleFilter()
-	case "z":
+	case "fold":
 		m.foldSubs = !m.foldSubs
-	case "[":
+	case "board-prev":
 		m.switchBoard(-1)
-	case "]":
+	case "board-next":
 		m.switchBoard(1)
-	case "m":
+	case "move":
 		if n > 0 && m.cardIndex(m.col) >= 0 {
 			m.moveSel = m.col
 			m.push(layerMove)
 		}
-	case "X":
+	case "clear-done":
 		m.clearDone()
-	case "ctrl+t":
+	case "theme":
 		m.openThemes()
 	}
 }
@@ -1494,9 +1493,16 @@ func (m *model) footer() string {
 	if m.searching {
 		return m.searchBar()
 	}
-	hint := "q quit   j/k select   J/K reorder   c new   enter open   ? help"
+	hint := fmt.Sprintf("%s quit   %s/%s select   %s/%s reorder   %s new   %s open   %s help",
+		m.cfg.Label("menu", "quit"), m.cfg.Label("menu", "down"), m.cfg.Label("menu", "up"),
+		m.cfg.Label("menu", "move-down"), m.cfg.Label("menu", "move-up"),
+		m.cfg.Label("menu", "new"), m.cfg.Label("menu", "open"), m.cfg.Label("menu", "help"))
 	if m.screen == screenBoard {
-		hint = "q back   j/k focus   y/p yank/paste   / search   f filter   z fold   ? help"
+		hint = fmt.Sprintf("%s back   %s/%s focus   %s/%s yank/paste   %s search   %s filter   %s fold   %s help",
+			m.cfg.Label("board", "back"), m.cfg.Label("board", "down"), m.cfg.Label("board", "up"),
+			m.cfg.Label("board", "yank"), m.cfg.Label("board", "paste"),
+			m.cfg.Label("board", "search"), m.cfg.Label("board", "filter"),
+			m.cfg.Label("board", "fold"), m.cfg.Label("board", "help"))
 	}
 	if m.notice != "" {
 		hint = m.notice
@@ -2193,7 +2199,7 @@ var helpLines = []string{
 	"  A                     archive the card (keeps it off the working board)",
 	"  v                     hide or show archive columns",
 	"  !                     cycle priority: none, !, !!",
-	"  t                     filter tags by typing, space toggles, enter saves",
+	"  t                     filter tags from the config, space toggles, ctrl+d deletes",
 	"  T                     due date YYYY-MM-DD, or +days to snooze",
 	"  o                     open the first http(s) link on the card",
 	"  X                     clear finished checklist items",
@@ -2253,10 +2259,17 @@ var helpLines = []string{
 	"Color theme",
 	"  j/k                   select",
 	"  enter                 apply",
-	"  c                     new theme (saved next to the board file)",
+	"  c                     new theme (saved in the config file)",
 	"  e                     edit colors (0-255 or #rrggbb)",
 	"  d                     delete a theme you added",
 	"  q                     cancel",
+	"",
+	"Config  ~/.config/kabmat/config",
+	"  missing file          built-in theme, tags, and keys are used",
+	"  theme                 linux-dex or catppuccin-mocha, or [theme.name]",
+	"  [tags]                the tag list. Omit the section to keep the defaults",
+	"  [keys.menu]           menu bindings, one action then its keys",
+	"  [keys.board]          board bindings, same shape",
 	"",
 	"Checklist",
 	"  j/k                   select",
@@ -2275,7 +2288,11 @@ func (m *model) normalKey(key string) {
 		return
 	}
 	n := 1
-	if repeatable[key] && m.count > 0 {
+	ctx := "menu"
+	if m.screen == screenBoard {
+		ctx = "board"
+	}
+	if m.cfg.Repeatable(ctx, key) && m.count > 0 {
 		n = m.count
 	}
 	m.count = 0
@@ -2695,21 +2712,6 @@ func (m *model) cyclePriority() {
 	}
 }
 
-// Tags already on the boards, plus the ones those cards are missing.
-var builtinTags = []string{
-	"bug",
-	"ci/cd",
-	"testing",
-	"devops",
-	"optimization",
-	"development",
-	"document",
-	"deployment",
-	"cloud",
-	"research",
-	"chore",
-}
-
 func (m *model) openTags() {
 	cur := m.currentTags()
 	m.tagList = m.tagChoices(cur)
@@ -2750,7 +2752,7 @@ func (m *model) tagChoices(selected []string) []string {
 		seen[tag] = true
 		out = append(out, tag)
 	}
-	for _, tag := range builtinTags {
+	for _, tag := range m.cfg.Tags {
 		add(tag)
 	}
 	if m.store != nil {
@@ -2830,6 +2832,8 @@ func (m *model) tagKey(key string) {
 	case "ctrl+u":
 		m.tagFilter = ""
 		m.snapTagSel()
+	case "ctrl+d":
+		m.deleteAddedTag()
 	case " ", "space":
 		ids := m.visibleTags()
 		if len(ids) == 0 {
@@ -2874,6 +2878,77 @@ func tagFilterRune(key string) (rune, bool) {
 		return c, true
 	default:
 		return 0, false
+	}
+}
+
+func (m *model) deleteAddedTag() {
+	if len(m.tagList) == 0 {
+		return
+	}
+	m.snapTagSel()
+	if m.tagSel < 0 || m.tagSel >= len(m.tagList) {
+		return
+	}
+	tag := m.tagList[m.tagSel]
+	m.tagList = append(m.tagList[:m.tagSel], m.tagList[m.tagSel+1:]...)
+	delete(m.tagOn, tag)
+	if m.tagSel >= len(m.tagList) && m.tagSel > 0 {
+		m.tagSel--
+	}
+	var tags []string
+	for _, have := range m.cfg.Tags {
+		if have != tag {
+			tags = append(tags, have)
+		}
+	}
+	m.cfg.Tags = tags
+	m.tagFilter = ""
+	m.stripTag(tag)
+	if err := m.saveConfig(); err != nil {
+		m.notice = err.Error()
+		return
+	}
+	m.notice = "deleted #" + tag
+}
+
+func (m *model) stripTag(tag string) {
+	var kept []string
+	for _, have := range m.edit.tags {
+		if have != tag {
+			kept = append(kept, have)
+		}
+	}
+	m.edit.tags = kept
+	if m.store == nil {
+		return
+	}
+	for bi := range m.store.Boards {
+		var picks [][2]int
+		cols := m.store.Boards[bi].Columns
+		for ci := range cols {
+			for ki := range cols[ci].Cards {
+				for _, have := range cols[ci].Cards[ki].Tags {
+					if have == tag {
+						picks = append(picks, [2]int{ci, ki})
+						break
+					}
+				}
+			}
+		}
+		if len(picks) == 0 {
+			continue
+		}
+		if err := m.store.ApplyCards(bi, picks, func(c *store.Card) {
+			next := make([]string, 0, len(c.Tags))
+			for _, have := range c.Tags {
+				if have != tag {
+					next = append(next, have)
+				}
+			}
+			c.Tags = next
+		}); err != nil {
+			m.notice = err.Error()
+		}
 	}
 }
 
@@ -2974,7 +3049,7 @@ func (m *model) tagDialog() string {
 			n++
 		}
 	}
-	hint := fmt.Sprintf("%d selected   type filters   space toggle   enter save   esc cancel", n)
+	hint := fmt.Sprintf("%d selected   type filters   space toggle   ctrl+d delete   enter save   esc cancel", n)
 	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit(hint, textW))
 	return panelBox(" Tags ", body, w, room+6, true)
 }

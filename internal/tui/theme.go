@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/Linux-DEX/kabmat/internal/config"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -274,21 +277,53 @@ func readThemeName(dataPath string) string {
 }
 
 func (m *model) loadTheme() {
-	m.schemes = mergeSchemes(readUserSchemes(m.store.Path))
-	m.themeName = "linux-dex"
-	if n := readThemeName(m.store.Path); n != "" {
-		if n == "default" {
-			n = "linux-dex"
+	m.schemes = m.loadedSchemes()
+	name := m.cfg.Theme
+	if name == "" {
+		name = "linux-dex"
+	}
+	if !m.cfg.Exists {
+		if old := readThemeName(m.store.Path); old != "" {
+			name = old
 		}
-		for i := range m.schemes {
-			if m.schemes[i].name == n {
-				m.themeName = n
-				m.schemeSel = i
-				break
-			}
+	}
+	if name == "default" {
+		name = "linux-dex"
+	}
+	m.themeName = "linux-dex"
+	for i := range m.schemes {
+		if m.schemes[i].name == name {
+			m.themeName = name
+			m.schemeSel = i
+			break
 		}
 	}
 	applyPalette(m.currentScheme().pal)
+}
+
+func (m *model) loadedSchemes() []scheme {
+	user := schemesFromConfig(m.cfg)
+	if !m.cfg.Exists {
+		user = append(user, readUserSchemes(m.store.Path)...)
+	}
+	return mergeSchemes(user)
+}
+
+func schemesFromConfig(cfg config.Config) []scheme {
+	names := make([]string, 0, len(cfg.Themes))
+	for name := range cfg.Themes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []scheme
+	for _, name := range names {
+		var pal palette
+		for key, val := range cfg.Themes[name] {
+			pal.set(key, val)
+		}
+		out = append(out, scheme{name: name, pal: pal, user: true})
+	}
+	return out
 }
 
 func (m *model) currentScheme() scheme {
@@ -304,7 +339,7 @@ func (m *model) currentScheme() scheme {
 }
 
 func (m *model) openThemes() {
-	m.schemes = mergeSchemes(readUserSchemes(m.store.Path))
+	m.schemes = m.loadedSchemes()
 	m.themeWas = m.themeName
 	m.schemeEdit = false
 	m.colorSel = 0
@@ -349,7 +384,7 @@ func (m *model) themeKey(key string) {
 		}
 	case "enter":
 		m.previewScheme()
-		if err := m.writeThemeName(); err != nil {
+		if err := m.saveConfig(); err != nil {
 			m.notice = err.Error()
 			return
 		}
@@ -423,7 +458,7 @@ func (m *model) addScheme(name string) {
 	})
 	m.schemeSel = len(m.schemes) - 1
 	m.previewScheme()
-	if err := m.writeUserSchemes(); err != nil {
+	if err := m.saveConfig(); err != nil {
 		m.notice = err.Error()
 	}
 }
@@ -442,7 +477,7 @@ func (m *model) setSchemeColor(val string) {
 	if m.schemes[m.schemeSel].name == m.themeName {
 		applyPalette(m.schemes[m.schemeSel].pal)
 	}
-	if err := m.writeUserSchemes(); err != nil {
+	if err := m.saveConfig(); err != nil {
 		m.notice = err.Error()
 	}
 }
@@ -477,35 +512,30 @@ func (m *model) deleteScheme() {
 			m.themeWas = m.themeName
 		}
 	}
-	if err := m.writeUserSchemes(); err != nil {
-		m.notice = err.Error()
-		return
-	}
-	if err := m.writeThemeName(); err != nil {
+	if err := m.saveConfig(); err != nil {
 		m.notice = err.Error()
 	}
 }
 
-func (m *model) writeThemeName() error {
-	return os.WriteFile(themeNamePath(m.store.Path), []byte(m.themeName+"\n"), 0o600)
-}
-
-func (m *model) writeUserSchemes() error {
-	var b strings.Builder
-	b.WriteString("# name on its own line, then key and color\n")
-	b.WriteString("# keys: ink paper accent warn gold tag muted pick card archive\n")
-	b.WriteString("# colors: 0-255 or #rrggbb\n")
+func (m *model) saveConfig() error {
+	m.cfg.Theme = m.themeName
+	m.cfg.Themes = map[string]map[string]string{}
 	for _, s := range m.schemes {
 		if !s.user {
 			continue
 		}
+		colors := map[string]string{}
 		p := s.pal.fill()
-		fmt.Fprintf(&b, "\n%s\n", s.name)
 		for _, slot := range colorSlots {
-			fmt.Fprintf(&b, "%s %s\n", slot.key, p.get(slot.key))
+			colors[slot.key] = p.get(slot.key)
 		}
+		m.cfg.Themes[s.name] = colors
 	}
-	return os.WriteFile(themesPath(m.store.Path), []byte(b.String()), 0o600)
+	if err := config.Save(m.cfg); err != nil {
+		return err
+	}
+	m.cfg.Exists = true
+	return nil
 }
 
 func (m *model) themeDialog() string {
@@ -542,10 +572,7 @@ func (m *model) themeDialog() string {
 		}
 		lines = append(lines, row)
 	}
-	path := ""
-	if m.store != nil {
-		path = themesPath(m.store.Path)
-	}
+	path := m.cfg.Path
 	hint := "j/k select   enter apply   c new   e colors   d delete   q cancel"
 	if m.notice != "" {
 		hint = m.notice

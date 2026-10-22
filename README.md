@@ -69,7 +69,7 @@ Press `?` inside the TUI for the full key list.
 | `A` | move the card into an Archive column (created if needed) instead of deleting it |
 | `v` | hide or show archive columns. The header keeps an archived count |
 | `!` | cycle priority: none, `!`, `!!` |
-| `t` | filter tags by typing, Space toggles a match, Enter saves. Enter on no match adds the typed tag. `/#work` and `f` still find them |
+| `t` | filter the config tag list by typing, Space toggles a match, Enter saves. Enter on no match adds the typed tag. `Ctrl-d` deletes the highlighted tag. `/#work` and `f` still find them |
 | `T` | set a due date (`YYYY-MM-DD`) or snooze (`+3`). Overdue dates are red, today is gold |
 | `o` | open the first http(s) link in the title or description |
 | `X` | clear finished checklist items on the focused card |
@@ -94,7 +94,7 @@ Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter`
 
 Card info fills the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. A `NORMAL` or `INSERT` badge sits on the card, subtask, and column prompts so the edit mode stays visible while the dialog covers the footer. The new-column and rename-column prompts are a single box around the name.
 
-`Ctrl-t` opens color themes. `linux-dex` is the default (the Ghostty palette: blue `#4C7CFF`, mint `#7DE1D0`, text `#CDD6F4` on `#313244`). `catppuccin-mocha` is the other built-in. `c` adds a theme and writes it to `themes` beside the board file, `e` edits a color (`0`–`255` or `#rrggbb`), and `d` deletes a theme you added. The chosen name is stored in `theme`. A hand-written block looks like this:
+`Ctrl-t` opens color themes. `linux-dex` is the default (the Ghostty palette: blue `#4C7CFF`, mint `#7DE1D0`, text `#CDD6F4` on `#313244`). `catppuccin-mocha` is the other built-in. `c` adds a theme, `e` edits a color (`0`–`255` or `#rrggbb`), and `d` deletes a theme you added. The choice is stored in the config file. A hand-written block looks like this:
 
 ```text
 dusk
@@ -104,6 +104,25 @@ ink 15
 ```
 
 Keys are `ink`, `paper`, `accent`, `warn`, `gold`, `tag`, `muted`, `pick`, `card`, and `archive`. A missing key keeps the linux-dex color.
+
+Settings live in `$XDG_CONFIG_HOME/kabmat/config`, which is `~/.config/kabmat/config` when that variable is unset. `KABMAT_CONFIG` points at a different file. If the file is missing, kabmat uses the built-in theme, tags, and keys. Creating it, or changing the theme inside the app, writes this shape:
+
+```text
+theme linux-dex
+
+[tags]
+spike
+
+[keys.board]
+tags t
+new-card c
+
+[theme.dusk]
+accent #89B4FA
+paper #313244
+```
+
+`[tags]` is the whole tag list. Leave that section out to keep the defaults: `bug`, `feature`, `documentation`, `testing`, `chore`, `refactor`, `performance`, `ci/cd`, `devops`, `deployment`, `security`, and `research`. A line under `[keys.menu]` or `[keys.board]` replaces that action's keys. Digits stay count prefixes, so they cannot be bindings. Board text editing stays on the vim keys.
 
 `c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `q` on either list saves and returns to the board. A subtask has its own summary and a tall description field.
 

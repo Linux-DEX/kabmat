@@ -12,6 +12,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "kabmat-config")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("KABMAT_CONFIG", filepath.Join(dir, "config"))
+	os.Exit(m.Run())
+}
+
 func TestBoardFlow(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
@@ -501,7 +510,7 @@ func TestTagPicker(t *testing.T) {
 	m.width, m.height = 80, 30
 	press(m, "t")
 	view := m.dialog()
-	for _, tag := range []string{"#bug", "#ci/cd", "#cloud", "#research", "#chore", "#legacy"} {
+	for _, tag := range []string{"#bug", "#feature", "#documentation", "#ci/cd", "#deployment", "#research", "#legacy"} {
 		if !strings.Contains(view, tag) {
 			t.Fatalf("missing %s\n%s", tag, view)
 		}
@@ -573,8 +582,8 @@ func TestUserTheme(t *testing.T) {
 	if m.themeName != "catppuccin-mocha" || m.top() != layerNone {
 		t.Fatalf("theme %s layer %d", m.themeName, m.top())
 	}
-	b, err := os.ReadFile(themeNamePath(s.Path))
-	if err != nil || strings.TrimSpace(string(b)) != "catppuccin-mocha" {
+	b, err := os.ReadFile(m.cfg.Path)
+	if err != nil || !strings.Contains(string(b), "theme catppuccin-mocha") {
 		t.Fatalf("saved %q %v", b, err)
 	}
 	press(m, "ctrl+t", "c", "i")
@@ -585,14 +594,191 @@ func TestUserTheme(t *testing.T) {
 	if m.top() != layerTheme || m.schemes[m.schemeSel].name != "dusk" || m.schemes[m.schemeSel].pal.accent != "111" {
 		t.Fatalf("edit %+v layer %d", m.schemes, m.top())
 	}
-	raw, err := os.ReadFile(themesPath(s.Path))
-	if err != nil || !strings.Contains(string(raw), "dusk") || !strings.Contains(string(raw), "accent 111") {
+	raw, err := os.ReadFile(m.cfg.Path)
+	if err != nil || !strings.Contains(string(raw), "[theme.dusk]") || !strings.Contains(string(raw), "accent 111") {
 		t.Fatalf("themes %q %v", raw, err)
 	}
 	again, err := newModel(s, "")
-	if err != nil || again.themeName != "catppuccin-mocha" {
+	if err != nil || again.themeName != "dusk" {
 		t.Fatalf("reload %s %v", again.themeName, err)
 	}
+}
+
+func TestDeleteAddedTag(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KABMAT_CONFIG", filepath.Join(dir, "config"))
+	data := t.TempDir()
+	s, err := store.Load(filepath.Join(data, "data"), filepath.Join(data, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship", Tags: []string{"spike", "bug"}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 30
+	press(m, "t")
+	if m.tagList[m.tagSel] != "bug" {
+		t.Fatalf("sel %s", m.tagList[m.tagSel])
+	}
+	press(m, "ctrl+d")
+	if m.notice != "deleted #bug" || strings.Contains(m.dialog(), "#bug") {
+		t.Fatalf("delete bug %q\n%s", m.notice, m.dialog())
+	}
+	typeRunes(m, "spike")
+	press(m, "ctrl+d")
+	if strings.Contains(m.dialog(), "#spike") || m.notice != "deleted #spike" {
+		t.Fatalf("delete notice %q\n%s", m.notice, m.dialog())
+	}
+	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 0 {
+		t.Fatalf("card tags %+v", tags)
+	}
+	press(m, "esc", "t")
+	if strings.Contains(m.dialog(), "#spike") {
+		t.Fatalf("spike returned\n%s", m.dialog())
+	}
+}
+
+func TestConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	t.Setenv("KABMAT_CONFIG", path)
+
+	data := t.TempDir()
+	s, err := store.Load(filepath.Join(data, "data"), filepath.Join(data, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"one", "two", "three"} {
+		if err := s.AddCard(0, 0, store.Card{Content: title}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bare, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare.cfg.Exists || bare.themeName != "linux-dex" {
+		t.Fatalf("missing file theme %s exists %v", bare.themeName, bare.cfg.Exists)
+	}
+	bare.width, bare.height = 100, 30
+	press(bare, "c")
+	if bare.top() != layerCard {
+		t.Fatal("default c should open a card")
+	}
+
+	body := "" +
+		"# comment\n\n" +
+		"theme dusk\n\n" +
+		"[tags]\n#review\n\n" +
+		"[keys.menu]\nquit x\n\n" +
+		"[keys.board]\ntags F\n\n" +
+		"[theme.dusk]\naccent #112233\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.themeName != "dusk" {
+		t.Fatalf("theme %s", m.themeName)
+	}
+	var accent string
+	for _, scheme := range m.schemes {
+		if scheme.name == "dusk" {
+			accent = scheme.pal.get("accent")
+		}
+	}
+	if accent != "#112233" {
+		t.Fatalf("accent %s", accent)
+	}
+	press(m, "q")
+	if m.quitting {
+		t.Fatal("q should not quit after the menu remap")
+	}
+	press(m, "x")
+	if !m.quitting {
+		t.Fatal("x should quit")
+	}
+
+	board, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	board.width, board.height = 100, 30
+	press(board, "t")
+	if board.top() == layerTag {
+		t.Fatal("t should not open tags")
+	}
+	press(board, "F")
+	if board.top() != layerTag || !strings.Contains(board.dialog(), "#review") {
+		t.Fatalf("tags\n%s", board.dialog())
+	}
+	press(board, "esc", "2", "j")
+	if board.cardIndex(0) != 2 {
+		t.Fatalf("count move landed on %d", board.cardIndex(0))
+	}
+
+	os.WriteFile(path, []byte("[keys.board]\nnope z\n"), 0o600)
+	if _, err := newModel(s, "Work"); err == nil {
+		t.Fatal("bad config should fail to open")
+	}
+}
+
+func TestConfigKeyAndTag(t *testing.T) {
+	path := mConfigPath(t)
+	body := "theme linux-dex\n\n[tags]\nspike\n\n[keys.board]\nnew-card x\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "c")
+	if m.top() == layerCard {
+		t.Fatal("c should no longer open a card")
+	}
+	press(m, "x")
+	if m.top() != layerCard {
+		t.Fatalf("x should open a card, layer %d", m.top())
+	}
+	m.pop()
+	press(m, "t")
+	if !strings.Contains(m.dialog(), "#spike") {
+		t.Fatalf("config tag\n%s", m.dialog())
+	}
+}
+
+func mConfigPath(t *testing.T) string {
+	t.Helper()
+	path := os.Getenv("KABMAT_CONFIG")
+	if path == "" {
+		t.Fatal("KABMAT_CONFIG is unset")
+	}
+	return path
 }
 
 type csiMsg string
