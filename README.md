@@ -92,7 +92,7 @@ Press `?` inside the TUI for the full key list.
 
 Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter` saves, `Esc` or `q` cancels. `Ctrl-Backspace` deletes the word before the cursor. Terminals report that key differently: macOS Terminal and Linux xterm send `Ctrl-h`, Kitty and xterm modifyOtherKeys send a CSI sequence, and Option-Backspace on macOS (Alt-Backspace on Linux) is the same action.
 
-Card info fills the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. The new-column and rename-column prompts use a wider dialog with its own name field.
+Card info fills the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. A `NORMAL` or `INSERT` badge sits on the card, subtask, and column prompts so the edit mode stays visible while the dialog covers the footer. The new-column and rename-column prompts are a single box around the name.
 
 `Ctrl-t` opens color themes. `linux-dex` is the default (the Ghostty palette: blue `#4C7CFF`, mint `#7DE1D0`, text `#CDD6F4` on `#313244`). `catppuccin-mocha` is the other built-in. `c` adds a theme and writes it to `themes` beside the board file, `e` edits a color (`0`–`255` or `#rrggbb`), and `d` deletes a theme you added. The chosen name is stored in `theme`. A hand-written block looks like this:
 

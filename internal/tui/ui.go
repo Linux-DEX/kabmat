@@ -1496,13 +1496,8 @@ func (m *model) footer() string {
 	inserting := m.top() == layerInput && m.prompt.insert ||
 		m.top() == layerCard && m.activeField().insert ||
 		m.top() == layerSubtask && m.subField().insert
-	if inserting {
-		mode = " INSERT "
-	} else if editing {
-		mode = " NORMAL "
-	}
-	if mode != "" {
-		mode = modeStyle.Render(mode)
+	if editing {
+		mode = modeBadge(inserting)
 	}
 	if p := m.position(); p != "" {
 		mode = p + mode
@@ -1513,6 +1508,23 @@ func (m *model) footer() string {
 		pad = 1
 	}
 	return barStyle.Render(hint + strings.Repeat(" ", pad) + mode)
+}
+
+func modeBadge(insert bool) string {
+	word := " NORMAL "
+	if insert {
+		word = " INSERT "
+	}
+	return modeStyle.Render(word)
+}
+
+func modeLine(insert bool, hint string, width int) string {
+	badge := modeBadge(insert)
+	room := width - lipgloss.Width(badge) - 2
+	if room < 1 {
+		return badge
+	}
+	return badge + "  " + mutedStyle.Render(fit(hint, room))
 }
 
 func (m *model) menuBody(h int) string {
@@ -1736,27 +1748,21 @@ func (m *model) inputDialog() string {
 		return m.columnDialog()
 	}
 	w := max(24, min(48, m.width*2/5))
-	return boxOnStyle.Width(w).Render(m.promptTitle + "\n" + m.prompt.render(w) + "\n" + mutedStyle.Render("i insert   enter save   esc cancel"))
+	textW := max(8, w-4)
+	body := m.promptTitle + "\n" + m.prompt.render(textW) + "\n" + modeLine(m.prompt.insert, "i insert   enter save   esc cancel", textW)
+	return boxOnStyle.Width(w).Render(body)
 }
 
 func (m *model) columnDialog() string {
-	w := max(48, min(72, m.width-4))
-	h := 12
-	if m.height > 4 && h > m.height-1 {
-		h = m.height - 1
-	}
-	textW := max(20, w-8)
-	title := " New Column "
+	inner := max(28, min(52, m.width-8))
+	textW := max(12, inner-2)
+	title := "New column"
 	if m.promptKind == inputRenameColumn {
-		title = " Rename Column "
+		title = "Rename column"
 	}
-	var head string
-	if b := m.curBoard(); b != nil {
-		head = mutedStyle.Render(fit(b.Name, textW)) + "\n"
-	}
-	name := panel(" Name ", m.prompt.render(max(1, textW-4)), textW, true)
-	hint := mutedStyle.Render(fit("i insert    enter save    esc cancel", textW))
-	return panelBox(title, head+name+"\n"+hint, w, h, true)
+	body := title + "\n\n" + m.prompt.render(textW) + "\n\n" +
+		modeLine(m.prompt.insert, "i insert    enter save    esc cancel", textW)
+	return boxOnStyle.Width(inner).Render(body)
 }
 
 func (m *model) scrollShown(ci, n, selPos, room int, count func(int) int) int {
@@ -1789,18 +1795,14 @@ func (m *model) cardDialog() string {
 	descH := max(8, totalH-summaryH-6)
 	content := panelBox(" Content ", m.edit.content.render(max(1, textW-4)), textW, summaryH, m.edit.focus == 0)
 	desc := panelBox(" Description ", m.edit.desc.renderWrap(max(1, textW-4), max(1, descH-3)), textW, descH, m.edit.focus == 1)
-	mode := "NORMAL"
-	if m.activeField().insert {
-		mode = "INSERT"
-	}
-	hint := mode + "   ! pri   t tags   T due   tab   c checklist   s subtasks   enter save"
+	hint := "! pri   t tags   T due   tab   c checklist   s subtasks   enter save"
 	if status := cardStatus(m.edit); status != "" {
 		hint = status + "   " + hint
 	}
 	if m.notice != "" {
 		hint = m.notice
 	}
-	return panelBox(" Card Info ", content+"\n"+desc+"\n"+mutedStyle.Render(fit(hint, textW)), totalW, totalH, true)
+	return panelBox(" Card Info ", content+"\n"+desc+"\n"+modeLine(m.activeField().insert, hint, textW), totalW, totalH, true)
 }
 
 func (m *model) subDialog() string {
@@ -1815,11 +1817,7 @@ func (m *model) subDialog() string {
 	if m.sub.done {
 		state = "done"
 	}
-	mode := "NORMAL"
-	if m.subField().insert {
-		mode = "INSERT"
-	}
-	hint := mode + "   tab field   space marks " + state + "   enter save   esc cancel"
+	hint := "tab field   space marks " + state + "   enter save   esc cancel"
 	if m.notice != "" {
 		hint = m.notice
 	}
@@ -1827,7 +1825,7 @@ func (m *model) subDialog() string {
 	if parent := strings.TrimSpace(m.edit.content.value()); parent != "" {
 		title = " Subtask · " + parent + " "
 	}
-	return panelBox(title, content+"\n"+desc+"\n"+mutedStyle.Render(fit(hint, textW)), totalW, totalH, true)
+	return panelBox(title, content+"\n"+desc+"\n"+modeLine(m.subField().insert, hint, textW), totalW, totalH, true)
 }
 
 func (m *model) subListDialog() string {

@@ -427,16 +427,58 @@ func TestColumnDialog(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.width, m.height = 100, 40
-	m.openInput(inputWIP, " WIP ", "")
-	wip := m.dialog()
-	m.pop()
 	m.openInput(inputNewColumn, " New Column Name ", "")
 	col := m.dialog()
-	if lipgloss.Width(col) <= lipgloss.Width(wip) || lipgloss.Height(col) < 10 {
-		t.Fatalf("col %dx%d wip %dx%d\n%s", lipgloss.Width(col), lipgloss.Height(col), lipgloss.Width(wip), lipgloss.Height(wip), col)
+	if strings.Count(col, "╭") != 1 || !strings.Contains(col, "New column") || !strings.Contains(col, "NORMAL") {
+		t.Fatalf("column dialog\n%s", col)
 	}
-	if !strings.Contains(col, "Name") || !strings.Contains(col, "Work") || !strings.Contains(col, "New Column") {
-		t.Fatal(col)
+	if h := lipgloss.Height(col); h < 5 || h > 9 {
+		t.Fatalf("height %d\n%s", h, col)
+	}
+	press(m, "i")
+	if !strings.Contains(m.dialog(), "INSERT") {
+		t.Fatalf("insert\n%s", m.dialog())
+	}
+	press(m, "esc")
+	if !strings.Contains(m.dialog(), "NORMAL") || strings.Contains(m.dialog(), "INSERT") {
+		t.Fatalf("normal\n%s", m.dialog())
+	}
+	m.pop()
+	m.openInput(inputRenameColumn, " Rename Column ", "Doing")
+	ren := m.dialog()
+	if !strings.Contains(ren, "Rename column") || !strings.Contains(ren, "Doing") || !strings.Contains(ren, "NORMAL") {
+		t.Fatalf("rename\n%s", ren)
+	}
+}
+
+func TestCardEditModeBadge(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship", Description: "notes"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "e")
+	if m.top() != layerCard || !strings.Contains(m.dialog(), "NORMAL") {
+		t.Fatalf("card normal\n%s", m.dialog())
+	}
+	press(m, "i")
+	if !strings.Contains(m.dialog(), "INSERT") {
+		t.Fatalf("card insert\n%s", m.dialog())
+	}
+	press(m, "esc", "tab", "i")
+	if !m.edit.desc.insert || !strings.Contains(m.dialog(), "INSERT") {
+		t.Fatalf("desc insert focus=%d\n%s", m.edit.focus, m.dialog())
 	}
 }
 
