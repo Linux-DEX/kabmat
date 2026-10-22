@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -69,6 +70,10 @@ func (f *field) handle(key string, runes []rune) (submit, cancel bool) {
 			f.col = 0
 		case "backspace", "delete":
 			f.backspace()
+		case "ctrl+w", "ctrl+h", "ctrl+backspace", "alt+backspace":
+			// ctrl+h is what macOS Terminal and Linux xterm send for ctrl+backspace.
+			// alt+backspace is Option+Backspace on macOS and Alt+Backspace on Linux.
+			f.deleteWord()
 		default:
 			if key == "space" {
 				runes = []rune{' '}
@@ -138,9 +143,32 @@ func (f *field) handle(key string, runes []rune) (submit, cancel bool) {
 				f.row = len(f.lines) - 1
 			}
 		}
+	case "ctrl+w", "ctrl+h", "ctrl+backspace", "alt+backspace":
+		f.deleteWord()
 	}
 	f.clamp()
 	return false, false
+}
+
+// deleteWord removes the word before the cursor, after eating spaces that sit against it.
+func (f *field) deleteWord() {
+	if f.col == 0 {
+		f.backspace()
+		return
+	}
+	r := f.line()
+	i := f.col
+	for i > 0 && unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	for i > 0 && !unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	next := make([]rune, 0, len(r)-(f.col-i))
+	next = append(next, r[:i]...)
+	next = append(next, r[f.col:]...)
+	f.setLine(next)
+	f.col = i
 }
 
 func (f *field) backspace() {
@@ -158,6 +186,116 @@ func (f *field) backspace() {
 	f.lines[f.row-1] = string(prev) + f.lines[f.row]
 	f.lines = append(f.lines[:f.row], f.lines[f.row+1:]...)
 	f.row--
+}
+
+// renderWrap soft-wraps each line and keeps the cursor row on screen.
+func (f field) renderWrap(width, rows int) string {
+	if width < 1 {
+		width = 1
+	}
+	// Leave a cell for the cursor when it sits at the end of a wrapped line.
+	if width > 1 {
+		width--
+	}
+	var lines []string
+	cursor := 0
+	for i, line := range f.lines {
+		parts := wrapRunes([]rune(line), width)
+		off := 0
+		for pi, part := range parts {
+			end := off + len(part)
+			showCursor := i == f.row && (f.col >= off && f.col < end || pi == len(parts)-1 && f.col >= end)
+			if showCursor {
+				cursor = len(lines)
+				lines = append(lines, paintCursor(part, f.col-off))
+			} else {
+				lines = append(lines, string(part))
+			}
+			off = end
+		}
+	}
+	if len(lines) == 0 {
+		return cursorStyle.Render(" ")
+	}
+	return strings.Join(windowLines(lines, cursor, rows), "\n")
+}
+
+func paintCursor(part []rune, col int) string {
+	if col < 0 {
+		col = 0
+	}
+	var b strings.Builder
+	if col > len(part) {
+		col = len(part)
+	}
+	if col > 0 {
+		b.WriteString(string(part[:col]))
+	}
+	if col < len(part) {
+		b.WriteString(cursorStyle.Render(string(part[col])))
+		if col+1 < len(part) {
+			b.WriteString(string(part[col+1:]))
+		}
+	} else {
+		b.WriteString(cursorStyle.Render(" "))
+	}
+	return b.String()
+}
+
+func windowLines(lines []string, cursor, rows int) []string {
+	if rows < 1 || len(lines) <= rows {
+		return lines
+	}
+	start := 0
+	if cursor >= rows {
+		start = cursor - rows + 1
+	}
+	if start+rows > len(lines) {
+		start = len(lines) - rows
+	}
+	return lines[start:]
+}
+
+// wrapRunes breaks on the last space that fits. A word longer than width is cut.
+func wrapRunes(r []rune, width int) [][]rune {
+	if width < 1 {
+		width = 1
+	}
+	if len(r) == 0 {
+		return [][]rune{{}}
+	}
+	var lines [][]rune
+	for len(r) > 0 {
+		if lipgloss.Width(string(r)) <= width {
+			lines = append(lines, r)
+			break
+		}
+		cut := 0
+		w := 0
+		lastSpace := -1
+		for i, ch := range r {
+			cw := lipgloss.Width(string(ch))
+			if cw < 1 {
+				cw = 1
+			}
+			if w+cw > width {
+				break
+			}
+			w += cw
+			cut = i + 1
+			if ch == ' ' {
+				lastSpace = cut
+			}
+		}
+		if cut == 0 {
+			cut = 1
+		} else if lastSpace > 0 && lastSpace < len(r) {
+			cut = lastSpace
+		}
+		lines = append(lines, r[:cut])
+		r = r[cut:]
+	}
+	return lines
 }
 
 func (f field) render(width int) string {

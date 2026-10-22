@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -136,7 +137,7 @@ func TestCardInfoBorder(t *testing.T) {
 		},
 	}
 	view := m.cardDialog()
-	for _, corner := range []string{"╭", "╮", "╰", "╯", "│"} {
+	for _, corner := range []string{"╭", "╮", "╰", "╯", "│", "─"} {
 		if !strings.Contains(view, corner) {
 			t.Fatalf("missing %s\n%s", corner, view)
 		}
@@ -344,6 +345,152 @@ func TestSignals(t *testing.T) {
 		t.Fatal(err, due)
 	}
 }
+
+func TestWordErase(t *testing.T) {
+	f := newField("hello world", false)
+	f.insert = true
+	f.col = len([]rune(f.value()))
+	f.handle("ctrl+w", nil)
+	if f.value() != "hello " || f.col != len([]rune("hello ")) {
+		t.Fatalf("ctrl+w %q col %d", f.value(), f.col)
+	}
+	f.handle("ctrl+h", nil)
+	if f.value() != "" {
+		t.Fatalf("ctrl+h %q", f.value())
+	}
+	f = newField("hello world", false)
+	f.col = len([]rune(f.value()))
+	f.handle("alt+backspace", nil)
+	if f.value() != "hello " {
+		t.Fatalf("alt %q", f.value())
+	}
+
+	if !ctrlBackspaceCSI(csiMsg("?CSI[49 50 55 59 53 117]?")) || !ctrlBackspaceCSI(csiMsg("?CSI[49 50 55 59 53 59 49 117]?")) || !ctrlBackspaceCSI(csiMsg("?CSI[50 55 59 53 59 49 50 55 126]?")) {
+		t.Fatal("csi")
+	}
+	if ctrlBackspaceCSI(csiMsg("not a key")) {
+		t.Fatal("plain")
+	}
+
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.edit = cardEdit{content: newField("hello world", false), desc: newField("", true)}
+	m.edit.content.insert = true
+	m.edit.content.col = len([]rune(m.edit.content.value()))
+	m.push(layerCard)
+	m.Update(csiMsg("?CSI[49 50 55 59 53 117]?"))
+	if m.edit.content.value() != "hello " {
+		t.Fatalf("csi erase %q", m.edit.content.value())
+	}
+}
+
+func TestDescriptionWraps(t *testing.T) {
+	text := strings.TrimSpace(strings.Repeat("alpha ", 40))
+	m := &model{
+		width:  80,
+		height: 30,
+		edit: cardEdit{
+			content: newField("title", false),
+			desc:    newField(text, true),
+			focus:   1,
+		},
+	}
+	view := m.cardDialog()
+	if strings.Count(view, "alpha") != 40 {
+		t.Fatalf("wrapped count %d\n%s", strings.Count(view, "alpha"), view)
+	}
+	m.edit.desc = newField(strings.Repeat("x", 200), true)
+	view = m.cardDialog()
+	if strings.Count(view, "x") != 200 {
+		t.Fatalf("hard wrap %d\n%s", strings.Count(view, "x"), view)
+	}
+}
+
+func TestColumnDialog(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 100, 40
+	m.openInput(inputWIP, " WIP ", "")
+	wip := m.dialog()
+	m.pop()
+	m.openInput(inputNewColumn, " New Column Name ", "")
+	col := m.dialog()
+	if lipgloss.Width(col) <= lipgloss.Width(wip) || lipgloss.Height(col) < 10 {
+		t.Fatalf("col %dx%d wip %dx%d\n%s", lipgloss.Width(col), lipgloss.Height(col), lipgloss.Width(wip), lipgloss.Height(wip), col)
+	}
+	if !strings.Contains(col, "Name") || !strings.Contains(col, "Work") || !strings.Contains(col, "New Column") {
+		t.Fatal(col)
+	}
+}
+
+func TestUserTheme(t *testing.T) {
+	defer applyPalette(defaultPalette())
+	got := parseThemes("# note\n\ndusk\naccent 111\npaper 236\n")
+	if len(got) != 1 || got[0].name != "dusk" || got[0].pal.accent != "111" || got[0].pal.paper != "236" {
+		t.Fatalf("%+v", got)
+	}
+	if !validColor("#abc") || !validColor("#aabbcc") || validColor("#gg0000") || !validColor("0") || validColor("256") || validColor("") {
+		t.Fatal("color")
+	}
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 30
+	if builtinSchemes()[0].name != "linux-dex" || builtinSchemes()[0].pal.accent != "#4C7CFF" || builtinSchemes()[1].pal.accent != "#89B4FA" {
+		t.Fatalf("builtins %+v", builtinSchemes())
+	}
+	press(m, "ctrl+t", "j", "enter")
+	if m.themeName != "catppuccin-mocha" || m.top() != layerNone {
+		t.Fatalf("theme %s layer %d", m.themeName, m.top())
+	}
+	b, err := os.ReadFile(themeNamePath(s.Path))
+	if err != nil || strings.TrimSpace(string(b)) != "catppuccin-mocha" {
+		t.Fatalf("saved %q %v", b, err)
+	}
+	press(m, "ctrl+t", "c", "i")
+	typeRunes(m, "dusk")
+	press(m, "enter", "e", "enter", "S")
+	typeRunes(m, "111")
+	press(m, "enter")
+	if m.top() != layerTheme || m.schemes[m.schemeSel].name != "dusk" || m.schemes[m.schemeSel].pal.accent != "111" {
+		t.Fatalf("edit %+v layer %d", m.schemes, m.top())
+	}
+	raw, err := os.ReadFile(themesPath(s.Path))
+	if err != nil || !strings.Contains(string(raw), "dusk") || !strings.Contains(string(raw), "accent 111") {
+		t.Fatalf("themes %q %v", raw, err)
+	}
+	again, err := newModel(s, "")
+	if err != nil || again.themeName != "catppuccin-mocha" {
+		t.Fatalf("reload %s %v", again.themeName, err)
+	}
+}
+
+type csiMsg string
+
+func (c csiMsg) String() string { return string(c) }
 
 func press(m *model, keys ...string) {
 	for _, k := range keys {

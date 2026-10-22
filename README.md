@@ -49,6 +49,7 @@ Press `?` inside the TUI for the full key list.
 | `d` | delete |
 | `Enter` | open |
 | `u` / `Ctrl-r` | undo / redo |
+| `Ctrl-t` | color theme |
 | `q` | quit |
 
 ### Board
@@ -80,6 +81,7 @@ Press `?` inside the TUI for the full key list.
 | `y` / `p` | yank / paste a card |
 | `Y` | duplicate the focused card |
 | `u` / `Ctrl-r` | undo / redo |
+| `Ctrl-t` | color theme |
 | `s` | open subtasks for the focused card |
 | `/` | search titles, descriptions, checklist items, and subtask titles |
 | `f` | show only cards matching the last search |
@@ -88,9 +90,20 @@ Press `?` inside the TUI for the full key list.
 
 ### Editing
 
-Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter` saves, `Esc` or `q` cancels.
+Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter` saves, `Esc` or `q` cancels. `Ctrl-Backspace` deletes the word before the cursor. Terminals report that key differently: macOS Terminal and Linux xterm send `Ctrl-h`, Kitty and xterm modifyOtherKeys send a CSI sequence, and Option-Backspace on macOS (Alt-Backspace on Linux) is the same action.
 
-Card info fills the screen. `Tab` switches between the summary and the description. `Enter` saves and returns to the board. `q` leaves without saving.
+Card info fills the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. The new-column and rename-column prompts use a wider dialog with its own name field.
+
+`Ctrl-t` opens color themes. `linux-dex` is the default (the Ghostty palette: blue `#4C7CFF`, mint `#7DE1D0`, text `#CDD6F4` on `#313244`). `catppuccin-mocha` is the other built-in. `c` adds a theme and writes it to `themes` beside the board file, `e` edits a color (`0`–`255` or `#rrggbb`), and `d` deletes a theme you added. The chosen name is stored in `theme`. A hand-written block looks like this:
+
+```text
+dusk
+accent 111
+paper 236
+ink 15
+```
+
+Keys are `ink`, `paper`, `accent`, `warn`, `gold`, `tag`, `muted`, `pick`, `card`, and `archive`. A missing key keeps the linux-dex color.
 
 `c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `q` on either list saves and returns to the board. A subtask has its own summary and a tall description field.
 

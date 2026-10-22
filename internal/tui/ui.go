@@ -34,6 +34,7 @@ const (
 	layerSubtasks
 	layerSubtask
 	layerMove
+	layerTheme
 )
 
 type inputKind int
@@ -48,6 +49,8 @@ const (
 	inputWIP
 	inputTags
 	inputDue
+	inputNewTheme
+	inputThemeColor
 )
 
 const staleDays = 7
@@ -135,6 +138,13 @@ type model struct {
 	searchSel   []int
 	picked      map[[2]int]struct{}
 	hideArchive bool
+
+	themeName  string
+	themeWas   string
+	schemes    []scheme
+	schemeSel  int
+	colorSel   int
+	schemeEdit bool
 }
 
 func Run(s *store.Store, open string) error {
@@ -153,7 +163,9 @@ func newModel(s *store.Store, open string) (*model, error) {
 		height:       24,
 		returnToMenu: true,
 		foldSubs:     true,
+		themeName:    "linux-dex",
 	}
+	m.loadTheme()
 	if open == "" {
 		p, err := store.LoadPlace(s.Path)
 		if err != nil {
@@ -202,34 +214,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.height = msg.Height
 		}
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
-			m.quitting = true
-			break
-		}
-		m.notice = ""
-		if m.searching {
-			m.searchKey(msg.String(), msg.Runes)
-			break
-		}
-		switch m.top() {
-		case layerHelp:
-			m.helpKey(msg.String())
-		case layerInput:
-			m.inputKey(msg.String(), msg.Runes)
-		case layerConfirm:
-			m.confirmKey(msg.String())
-		case layerChecklist:
-			m.checkKey(msg.String())
-		case layerSubtasks:
-			m.subListKey(msg.String())
-		case layerSubtask:
-			m.subKey(msg.String(), msg.Runes)
-		case layerCard:
-			m.cardKey(msg.String(), msg.Runes)
-		case layerMove:
-			m.moveKey(msg.String())
-		default:
-			m.normalKey(msg.String())
+		m.onKey(msg.String(), msg.Runes)
+	default:
+		if ctrlBackspaceCSI(msg) {
+			m.onKey("ctrl+backspace", nil)
 		}
 	}
 	if err := m.store.Flush(); err != nil {
@@ -262,6 +250,52 @@ func (m *model) View() string {
 		body = m.boardBody(bodyH)
 	}
 	return strings.TrimRight(m.header()+"\n"+body+"\n"+m.footer(), "\n")
+}
+
+func (m *model) onKey(key string, runes []rune) {
+	if key == "ctrl+c" {
+		m.quitting = true
+		return
+	}
+	m.notice = ""
+	if m.searching {
+		m.searchKey(key, runes)
+		return
+	}
+	switch m.top() {
+	case layerHelp:
+		m.helpKey(key)
+	case layerInput:
+		m.inputKey(key, runes)
+	case layerConfirm:
+		m.confirmKey(key)
+	case layerChecklist:
+		m.checkKey(key)
+	case layerSubtasks:
+		m.subListKey(key)
+	case layerSubtask:
+		m.subKey(key, runes)
+	case layerCard:
+		m.cardKey(key, runes)
+	case layerMove:
+		m.moveKey(key)
+	case layerTheme:
+		m.themeKey(key)
+	default:
+		m.normalKey(key)
+	}
+}
+
+// ctrlBackspaceCSI reports Kitty CSI-u and xterm modifyOtherKeys for ctrl+backspace.
+// Those sequences differ by terminal; bubbletea 1.3 leaves them as an unknown CSI message.
+func ctrlBackspaceCSI(msg tea.Msg) bool {
+	s := fmt.Sprint(msg)
+	// 127;5u and 127;5;1u (press)
+	if strings.Contains(s, "49 50 55 59 53 117") || strings.Contains(s, "49 50 55 59 53 59 49 117") {
+		return true
+	}
+	// ESC [ 27 ; 5 ; 127 ~
+	return strings.Contains(s, "50 55 59 53 59 49 50 55 126")
 }
 
 func (m *model) menuKey(key string) {
@@ -314,6 +348,8 @@ func (m *model) menuKey(key string) {
 			m.cardScroll = nil
 			m.openBoard(m.menuSel, true)
 		}
+	case "ctrl+t":
+		m.openThemes()
 	}
 }
 
@@ -459,12 +495,14 @@ func (m *model) boardKey(key string) {
 		}
 	case "X":
 		m.clearDone()
+	case "ctrl+t":
+		m.openThemes()
 	}
 }
 
 func (m *model) helpKey(key string) {
 	switch key {
-	case "q":
+	case "q", "esc":
 		m.pop()
 	case "k":
 		if m.helpOff > 0 {
@@ -540,6 +578,10 @@ func (m *model) inputKey(key string, runes []rune) {
 				c.Due = due
 			})
 		}
+	case inputNewTheme:
+		m.addScheme(value)
+	case inputThemeColor:
+		m.setSchemeColor(value)
 	}
 	if err != nil {
 		m.notice = err.Error()
@@ -1641,6 +1683,8 @@ func (m *model) dialog() string {
 		return m.subDialog()
 	case layerMove:
 		return m.moveDialog()
+	case layerTheme:
+		return m.themeDialog()
 	default:
 		return ""
 	}
@@ -1683,13 +1727,36 @@ func (m *model) helpDialog() string {
 	for _, line := range helpLines[m.helpOff:end] {
 		lines = append(lines, fit(line, textW))
 	}
-	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render("j/k scroll    q close")
+	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render("j/k scroll    q/esc close")
 	return panelBox(" Help ", body, w, h, true)
 }
 
 func (m *model) inputDialog() string {
+	if m.promptKind == inputNewColumn || m.promptKind == inputRenameColumn {
+		return m.columnDialog()
+	}
 	w := max(24, min(48, m.width*2/5))
 	return boxOnStyle.Width(w).Render(m.promptTitle + "\n" + m.prompt.render(w) + "\n" + mutedStyle.Render("i insert   enter save   esc cancel"))
+}
+
+func (m *model) columnDialog() string {
+	w := max(48, min(72, m.width-4))
+	h := 12
+	if m.height > 4 && h > m.height-1 {
+		h = m.height - 1
+	}
+	textW := max(20, w-8)
+	title := " New Column "
+	if m.promptKind == inputRenameColumn {
+		title = " Rename Column "
+	}
+	var head string
+	if b := m.curBoard(); b != nil {
+		head = mutedStyle.Render(fit(b.Name, textW)) + "\n"
+	}
+	name := panel(" Name ", m.prompt.render(max(1, textW-4)), textW, true)
+	hint := mutedStyle.Render(fit("i insert    enter save    esc cancel", textW))
+	return panelBox(title, head+name+"\n"+hint, w, h, true)
 }
 
 func (m *model) scrollShown(ci, n, selPos, room int, count func(int) int) int {
@@ -1721,7 +1788,7 @@ func (m *model) cardDialog() string {
 	summaryH := 5
 	descH := max(8, totalH-summaryH-6)
 	content := panelBox(" Content ", m.edit.content.render(max(1, textW-4)), textW, summaryH, m.edit.focus == 0)
-	desc := panelBox(" Description ", m.edit.desc.render(max(1, textW-4)), textW, descH, m.edit.focus == 1)
+	desc := panelBox(" Description ", m.edit.desc.renderWrap(max(1, textW-4), max(1, descH-3)), textW, descH, m.edit.focus == 1)
 	mode := "NORMAL"
 	if m.activeField().insert {
 		mode = "INSERT"
@@ -1743,7 +1810,7 @@ func (m *model) subDialog() string {
 	summaryH := 5
 	descH := max(8, totalH-summaryH-6)
 	content := panelBox(" Summary ", m.sub.content.render(max(1, textW-4)), textW, summaryH, m.sub.focus == 0)
-	desc := panelBox(" Description ", m.sub.desc.render(max(1, textW-4)), textW, descH, m.sub.focus == 1)
+	desc := panelBox(" Description ", m.sub.desc.renderWrap(max(1, textW-4), max(1, descH-3)), textW, descH, m.sub.focus == 1)
 	state := "open"
 	if m.sub.done {
 		state = "done"
@@ -2037,31 +2104,31 @@ func shortName(s string) string {
 }
 
 var (
-	barStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
-	modeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("33"))
+	barStyle        lipgloss.Style
+	modeStyle       lipgloss.Style
 	titleStyle      = lipgloss.NewStyle().Bold(true)
-	selStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("255"))
+	selStyle        lipgloss.Style
 	mutedStyle      = lipgloss.NewStyle().Faint(true)
 	doneStyle       = lipgloss.NewStyle().Faint(true).Strikethrough(true)
-	warnStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
-	priStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	priHotStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
-	dueStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	dueHotStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	tagStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
-	staleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	boxStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	boxOnStyle      = boxStyle.BorderForeground(lipgloss.Color("33"))
-	boxHotStyle     = boxStyle.BorderForeground(lipgloss.Color("203"))
-	boxArchiveStyle = boxStyle.BorderForeground(lipgloss.Color("238"))
-	cardStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
-	cardOnStyle     = cardStyle.BorderForeground(lipgloss.Color("33"))
-	cardPickStyle   = cardStyle.BorderForeground(lipgloss.Color("141"))
-	cardStaleStyle  = cardStyle.BorderForeground(lipgloss.Color("238"))
+	warnStyle       lipgloss.Style
+	priStyle        lipgloss.Style
+	priHotStyle     lipgloss.Style
+	dueStyle        lipgloss.Style
+	dueHotStyle     lipgloss.Style
+	tagStyle        lipgloss.Style
+	staleStyle      lipgloss.Style
+	boxStyle        lipgloss.Style
+	boxOnStyle      lipgloss.Style
+	boxHotStyle     lipgloss.Style
+	boxArchiveStyle lipgloss.Style
+	cardStyle       lipgloss.Style
+	cardOnStyle     lipgloss.Style
+	cardPickStyle   lipgloss.Style
+	cardStaleStyle  lipgloss.Style
 )
 
 var helpLines = []string{
-	"Help: j/k scroll, q close",
+	"Help: j/k scroll, q or esc close",
 	"",
 	"Main menu",
 	"  q                     quit",
@@ -2074,6 +2141,7 @@ var helpLines = []string{
 	"  d                     delete",
 	"  enter                 open",
 	"  u / ctrl+r            undo / redo",
+	"  ctrl+t                color theme",
 	"",
 	"Input, normal",
 	"  h/l                   move",
@@ -2088,6 +2156,8 @@ var helpLines = []string{
 	"  esc                   normal mode",
 	"  enter                 save or newline",
 	"  backspace             delete character",
+	"  ctrl+backspace        delete the word before the cursor",
+	"  alt+backspace         same (option+backspace on macOS)",
 	"",
 	"Confirm",
 	"  y/enter               yes",
@@ -2128,6 +2198,7 @@ var helpLines = []string{
 	"  f                     filter cards by the last search",
 	"  z                     fold subtasks on unfocused cards",
 	"  u / ctrl+r            undo / redo",
+	"  ctrl+t                color theme",
 	"  /                     search title, description, checklist, subtasks",
 	"  n/N                   next/previous match",
 	"  5j, 3L, ...           count prefix for movement keys",
@@ -2139,6 +2210,7 @@ var helpLines = []string{
 	"  q/esc                 cancel",
 	"",
 	"Card info (fills the screen)",
+	"  description           wraps instead of cutting the line",
 	"  tab                   switch content/description",
 	"  i                     insert",
 	"  ! / t / T             priority, tags, due date",
@@ -2162,6 +2234,14 @@ var helpLines = []string{
 	"  space                 done",
 	"  enter                 save",
 	"  esc                   cancel",
+	"",
+	"Color theme",
+	"  j/k                   select",
+	"  enter                 apply",
+	"  c                     new theme (saved next to the board file)",
+	"  e                     edit colors (0-255 or #rrggbb)",
+	"  d                     delete a theme you added",
+	"  q                     cancel",
 	"",
 	"Checklist",
 	"  j/k                   select",
