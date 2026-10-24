@@ -59,6 +59,64 @@ func TestAddCardFlag(t *testing.T) {
 	}
 }
 
+func TestAddFlagRejectsNewlineAndKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddColumn(0, "Todo"); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+	before, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	_, _, err = applyArgs([]string{"-a", "first\nsecond", "-o", "Work"}, s, &out)
+	if err == nil || !strings.Contains(err.Error(), "newline") {
+		t.Fatalf("want newline error, got %v", err)
+	}
+	after, err := os.ReadFile(s.Path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("failed add changed the file: %v", err)
+	}
+	s2, err := store.Load(s.Path, s.Backup)
+	if err != nil {
+		t.Fatalf("file corrupted: %v", err)
+	}
+	if len(s2.Boards) != 1 || len(s2.Boards[0].Columns[0].Cards) != 0 {
+		t.Fatalf("boards: %+v", s2.Boards)
+	}
+}
+
+func TestCLIAddThenReload(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, _, err := applyArgs([]string{"-c", "Work", "-T", "-a", "buy milk", "-o", "Work"}, s, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Load(s.Path, s.Backup)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := s2.Boards[0].Columns[0].Cards
+	if len(got) != 1 || got[0].Content != "buy milk" {
+		t.Fatalf("cards: %+v", got)
+	}
+}
+
 func TestTemplateAndExport(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))

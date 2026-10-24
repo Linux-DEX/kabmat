@@ -985,24 +985,10 @@ func (m *model) sendCard(dst int) {
 	if len(picks) == 0 {
 		return
 	}
-	var blocked error
-	moved := 0
-	for _, p := range picks {
-		if p[0] == dst {
-			continue
-		}
-		ok, err := m.store.MoveCardTo(m.board, p[0], p[1], dst)
-		if err != nil {
-			blocked = err
-			break
-		}
-		if ok {
-			moved++
-		}
-	}
+	_, moved, err := m.store.MoveCardsTo(m.board, picks, dst)
 	m.picked = nil
-	if blocked != nil {
-		m.notice = blocked.Error()
+	if err != nil {
+		m.notice = err.Error()
 	}
 	if moved == 0 {
 		return
@@ -1062,28 +1048,15 @@ func (m *model) shiftCard(dir int) {
 	if len(picks) == 0 {
 		return
 	}
-	var blocked error
-	moved := 0
-	focus := m.col
-	for _, p := range picks {
-		ok, err := m.store.MoveCardHoriz(m.board, p[0], p[1], dir)
-		if err != nil {
-			blocked = err
-			break
-		}
-		if ok {
-			moved++
-			focus = p[0] + dir
-		}
-	}
+	dst, moved, err := m.store.ShiftCards(m.board, picks, dir)
 	m.picked = nil
-	if blocked != nil {
-		m.notice = blocked.Error()
+	if err != nil {
+		m.notice = err.Error()
 	}
 	if moved == 0 {
 		return
 	}
-	m.col = focus
+	m.col = dst
 	m.growCardSel()
 	cards := m.curBoard().Columns[m.col].Cards
 	if m.store.CardAtBottom {
@@ -2663,22 +2636,10 @@ func (m *model) archiveTargets() {
 	if len(picks) == 0 {
 		return
 	}
-	var blocked error
-	dst, n := -1, 0
-	for _, p := range picks {
-		d, err := m.store.ArchiveCard(m.board, p[0], p[1])
-		if err != nil {
-			if errors.Is(err, store.ErrArchived) {
-				continue
-			}
-			blocked = err
-			break
-		}
-		dst, n = d, n+1
-	}
+	dst, n, err := m.store.ArchiveCards(m.board, picks)
 	m.picked = nil
-	if blocked != nil {
-		m.notice = blocked.Error()
+	if err != nil {
+		m.notice = err.Error()
 	}
 	if n == 0 {
 		if m.notice == "" {

@@ -113,8 +113,17 @@ func expandHome(path string) (string, error) {
 	return filepath.Join(home, path[2:]), nil
 }
 
+const maxDataSize = 64 << 20
+
 func Load(path, backup string) (*Store, error) {
 	s := &Store{Path: path, Backup: backup}
+	info, err := os.Stat(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("couldn't read data from file %q: %w", path, err)
+	}
+	if err == nil && info.Size() > maxDataSize {
+		return nil, fmt.Errorf("%s: board file is too large (%d MB)", path, info.Size()>>20)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -143,6 +152,9 @@ func parse(data string) ([]Board, error) {
 	readingBoard, readingColumn, readingCard := false, false, false
 	for i, line := range strings.Split(data, "\n") {
 		n := i + 1
+		if line == "" {
+			continue // a blank line is never meaningful board data
+		}
 		switch {
 		case strings.HasPrefix(line, indentSubDesc):
 			if !readingCard || len(lastCard(boards).Subtasks) == 0 {
@@ -517,6 +529,34 @@ func validBoardName(name string) (string, error) {
 	return name, nil
 }
 
+// validCardContent is one line. Newlines are refused because the board file
+// is an indented text format: a second line would be reparsed as a board,
+// column, or checklist row on the next load.
+func validCardContent(s string) (string, error) {
+	if strings.ContainsAny(s, "\r\n") {
+		return "", errors.New("card text can't contain a newline")
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", errEmptyName
+	}
+	return s, nil
+}
+
+// validColumnTitle refuses braces: a ` {…}` suffix is on-disk flag syntax, so
+// a braced title would come back from the file with different WIP/gate/archive
+// settings and a shortened name.
+func validColumnTitle(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", errEmptyName
+	}
+	if strings.ContainsAny(s, "{}\r\n") {
+		return "", errors.New("column title can't contain braces or a newline")
+	}
+	return s, nil
+}
+
 func (s *Store) nameTaken(name string, except int) bool {
 	for i := range s.Boards {
 		if i != except && s.Boards[i].Name == name {
@@ -586,18 +626,18 @@ func (s *Store) MoveBoard(i, dir int) (bool, error) {
 }
 
 func (s *Store) AddColumn(bi int, title string) error {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return errEmptyName
+	title, err := validColumnTitle(title)
+	if err != nil {
+		return err
 	}
 	s.Boards[bi].Columns = append(s.Boards[bi].Columns, Column{Title: title})
 	return s.save()
 }
 
 func (s *Store) RenameColumn(bi, ci int, title string) error {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return errEmptyName
+	title, err := validColumnTitle(title)
+	if err != nil {
+		return err
 	}
 	s.Boards[bi].Columns[ci].Title = title
 	return s.save()
@@ -624,10 +664,11 @@ func (s *Store) AddCard(bi, ci int, card Card) error {
 }
 
 func (s *Store) InsertCard(bi, ci, at int, card Card) error {
-	card.Content = strings.TrimSpace(card.Content)
-	if card.Content == "" {
-		return errEmptyName
+	content, err := validCardContent(card.Content)
+	if err != nil {
+		return err
 	}
+	card.Content = content
 	card.Tags = ParseTags(strings.Join(card.Tags, " "))
 	if card.Priority < 0 {
 		card.Priority = 0
@@ -652,10 +693,11 @@ func (s *Store) InsertCard(bi, ci, at int, card Card) error {
 }
 
 func (s *Store) UpdateCard(bi, ci, cardi int, card Card) error {
-	card.Content = strings.TrimSpace(card.Content)
-	if card.Content == "" {
-		return errEmptyName
+	content, err := validCardContent(card.Content)
+	if err != nil {
+		return err
 	}
+	card.Content = content
 	card.Tags = ParseTags(strings.Join(card.Tags, " "))
 	if card.Priority < 0 {
 		card.Priority = 0
@@ -724,19 +766,63 @@ func (s *Store) MoveCardHoriz(bi, src, cardi, dir int) (bool, error) {
 }
 
 func (s *Store) MoveCardTo(bi, src, cardi, dst int) (bool, error) {
-	if err := s.relocate(bi, src, cardi, dst); err != nil {
-		if errors.Is(err, errNoMove) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, s.save()
+	_, n, err := s.batchRelocate(bi, [][2]int{{src, cardi}}, func([2]int) int { return dst })
+	return n > 0, err
 }
 
 var errNoMove = errors.New("card stays")
 
 // ErrArchived is returned when the card is already in an archive column.
 var ErrArchived = errors.New("already archived")
+
+// batchRelocate relocates each [column, card] pick to dstOf's column as one
+// undo step. Picks must be ordered bottom-up, later in a column after
+// earlier (tui.movePicks does this) so card indexes stay valid while earlier
+// picks are removed. A failed admission stops the batch and keeps earlier
+// moves; picks that can't relocate at all (errNoMove) are skipped. Returns
+// the destination of the last moved card (-1 if none), how many moved, and
+// the first blocking error.
+func (s *Store) batchRelocate(bi int, picks [][2]int, dstOf func([2]int) int) (int, int, error) {
+	var err error
+	n, lastDst, stop := 0, -1, false
+	for _, p := range picks {
+		if stop {
+			break
+		}
+		dst := dstOf(p)
+		e := s.relocate(bi, p[0], p[1], dst)
+		switch {
+		case e == nil:
+			n++
+			lastDst = dst
+		case errors.Is(e, errNoMove):
+		default:
+			err = e
+			stop = true
+		}
+	}
+	if n > 0 {
+		if err2 := s.save(); err2 != nil {
+			return lastDst, n, err2
+		}
+	}
+	return lastDst, n, err
+}
+
+// MoveCardsTo relocates every pick into dst as one undo step. Returns the
+// destination column, how many cards moved, and the first blocking error.
+func (s *Store) MoveCardsTo(bi int, picks [][2]int, dst int) (int, int, error) {
+	_, n, err := s.batchRelocate(bi, picks, func([2]int) int { return dst })
+	return dst, n, err
+}
+
+// ShiftCards relocates every pick one column in dir as one undo step.
+// Returns the destination of the last moved card, how many moved, and the
+// first blocking error.
+func (s *Store) ShiftCards(bi int, picks [][2]int, dir int) (int, int, error) {
+	lastDst, n, err := s.batchRelocate(bi, picks, func(p [2]int) int { return p[0] + dir })
+	return lastDst, n, err
+}
 
 func (s *Store) relocate(bi, src, cardi, dst int) error {
 	cols := s.Boards[bi].Columns
@@ -757,6 +843,18 @@ func (s *Store) relocate(bi, src, cardi, dst int) error {
 	return nil
 }
 
+// archiveColumn finds the board's archive column, creating one when missing.
+func (s *Store) archiveColumn(bi int) int {
+	cols := s.Boards[bi].Columns
+	for i := range cols {
+		if cols[i].Archive {
+			return i
+		}
+	}
+	s.Boards[bi].Columns = append(cols, Column{Title: "Archive", Archive: true})
+	return len(s.Boards[bi].Columns) - 1
+}
+
 // ArchiveCard moves a card into the board's archive column, creating one if needed.
 func (s *Store) ArchiveCard(bi, src, cardi int) (int, error) {
 	cols := s.Boards[bi].Columns
@@ -766,21 +864,33 @@ func (s *Store) ArchiveCard(bi, src, cardi int) (int, error) {
 	if cols[src].Archive {
 		return src, ErrArchived
 	}
-	dst := -1
-	for i := range cols {
-		if cols[i].Archive {
-			dst = i
-			break
-		}
-	}
-	if dst < 0 {
-		s.Boards[bi].Columns = append(s.Boards[bi].Columns, Column{Title: "Archive", Archive: true})
-		dst = len(s.Boards[bi].Columns) - 1
-	}
+	dst := s.archiveColumn(bi)
 	if err := s.relocate(bi, src, cardi, dst); err != nil {
 		return dst, err
 	}
 	return dst, s.save()
+}
+
+// ArchiveCards moves each pick into the board's first archive column (creating
+// one when missing) as one undo step. A pick already in any archive column
+// stays there. Returns that archive column, how many cards moved, and the
+// first blocking error.
+func (s *Store) ArchiveCards(bi int, picks [][2]int) (int, int, error) {
+	if len(picks) == 0 {
+		return -1, 0, nil
+	}
+	dst := s.archiveColumn(bi)
+	cols := s.Boards[bi].Columns
+	lastDst, n, err := s.batchRelocate(bi, picks, func(p [2]int) int {
+		if p[0] >= 0 && p[0] < len(cols) && cols[p[0]].Archive {
+			return p[0]
+		}
+		return dst
+	})
+	if n > 0 {
+		lastDst = dst
+	}
+	return lastDst, n, err
 }
 
 // ApplyCards updates each [column, card] and writes one undo step.
@@ -1033,6 +1143,9 @@ func (s *Store) step(from, to *[]string) (bool, error) {
 	}
 	*from = (*from)[:last]
 	*to = append(*to, s.committed)
+	if len(*to) > maxUndo {
+		*to = (*to)[1:]
+	}
 	s.Boards = boards
 	s.committed = target
 	s.dirty = true

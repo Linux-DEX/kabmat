@@ -558,6 +558,7 @@ func TestTagPicker(t *testing.T) {
 
 func TestUserTheme(t *testing.T) {
 	defer applyPalette(defaultPalette())
+	t.Setenv("KABMAT_CONFIG", filepath.Join(t.TempDir(), "config"))
 	got := parseThemes("# note\n\ndusk\naccent 111\npaper 236\n")
 	if len(got) != 1 || got[0].name != "dusk" || got[0].pal.accent != "111" || got[0].pal.paper != "236" {
 		t.Fatalf("%+v", got)
@@ -772,12 +773,13 @@ func TestConfigKeyAndTag(t *testing.T) {
 	}
 }
 
+// mConfigPath hands the test a fresh, isolated config file and points
+// KABMAT_CONFIG at it, so test suites that rerun (go test -count=2) never see
+// another test's saved bindings or tags.
 func mConfigPath(t *testing.T) string {
 	t.Helper()
-	path := os.Getenv("KABMAT_CONFIG")
-	if path == "" {
-		t.Fatal("KABMAT_CONFIG is unset")
-	}
+	path := filepath.Join(t.TempDir(), "config")
+	t.Setenv("KABMAT_CONFIG", path)
 	return path
 }
 
@@ -811,5 +813,92 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlP}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+}
+
+func TestSelectAllSendThenUndo(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddColumn(0, "Todo"); err != nil || s.AddColumn(0, "Doing") != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"a", "b", "c"} {
+		if err := s.AddCard(0, 0, store.Card{Content: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddCard(0, 1, store.Card{Content: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+
+	// pick all three Todo cards by selection moves: a at 0, then J>space, J>space
+	press(m, "space", "J", "space", "J", "space")
+	if len(m.picked) != 3 {
+		t.Fatalf("picked %d cards", len(m.picked))
+	}
+	if err := m.store.AddCard(0, 0, store.Card{Content: "x\ny"}); err == nil {
+		t.Fatal("newline content must stay refused through the model")
+	}
+	press(m, "L")
+	// picks are index-based and processed bottom-up: contents moved with the
+	// J-swaps, so the batch relocates a (idx2), c (idx1), b (idx0)
+	doing := s.Boards[0].Columns[1].Cards
+	for i, want := range []string{"b", "c", "a", "d"} {
+		if doing[i].Content != want {
+			t.Fatalf("Doing[%d]=%q want %q: %+v", i, doing[i].Content, want, doing)
+		}
+	}
+	// one undo press reverts the whole batch (back to after the J-swaps)
+	press(m, "u")
+	todo := s.Boards[0].Columns[0].Cards
+	var names []string
+	for _, c := range todo {
+		names = append(names, c.Content)
+	}
+	if strings.Join(names, "") != "bca" || len(s.Boards[0].Columns[1].Cards) != 1 {
+		t.Fatalf("undo state: todo=%q doing=%+v", names, s.Boards[0].Columns[1].Cards)
+	}
+}
+
+func TestRenameColumnRejectsBraces(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "E")
+	if m.top() != layerInput {
+		t.Fatalf("expected input layer, got %d", m.top())
+	}
+	press(m, "S")
+	typeRunes(m, "Bad {x}")
+	press(m, "enter")
+	if m.top() != layerNone {
+		t.Fatalf("dialog should close, layer=%d", m.top())
+	}
+	if !strings.Contains(m.notice, "braces") {
+		t.Fatalf("notice: %q", m.notice)
+	}
+	if s.Boards[0].Columns[0].Title != "Todo" {
+		t.Fatalf("title changed: %q", s.Boards[0].Columns[0].Title)
 	}
 }

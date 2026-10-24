@@ -102,3 +102,38 @@ func TestRejectsBadConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveLoadThemeRoundtrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kabmat", "config")
+	cfg := Default()
+	cfg.Path = path
+	cfg.Theme = "sunset"
+	cfg.Themes = map[string]map[string]string{
+		"sunset": {"accent": "#FF7A59", "ink": "255"},
+	}
+	cfg.Tags = []string{"bug", "review"}
+	cfg.Menu["quit"] = []string{"Q"}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KABMAT_CONFIG", path)
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Theme != "sunset" {
+		t.Fatalf("theme: %q", got.Theme)
+	}
+	if got.Exists != true {
+		t.Fatalf("exists: %v", got.Exists)
+	}
+	if pal := got.Themes["sunset"]; pal["accent"] != "#FF7A59" || pal["ink"] != "255" {
+		t.Fatalf("themes: %+v", pal)
+	}
+	if strings.Join(got.Tags, ",") != "bug,review" {
+		t.Fatalf("tags: %v", got.Tags)
+	}
+	if got.Label("menu", "quit") != "Q" {
+		t.Fatalf("keys: %v", got.Menu["quit"])
+	}
+}
