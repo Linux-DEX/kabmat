@@ -63,7 +63,7 @@ Press `?` inside the TUI for the full key list.
 | `H` / `L` | move the card to the left / right column |
 | `m` | move the focused card to a chosen column |
 | `Space` | select the card; bulk move, delete, tag, and due use the selection |
-| `Esc` | clear the selection |
+| `Esc` | clear the selection, or close the dialog in front of the board |
 | `w` | set the column WIP limit (`0` clears it). The header and the column title show `count/limit`, and the column turns red when it is over |
 | `W` | toggle a rule: cards can enter this column only when the checklist is finished. A `*` sits on the column name |
 | `A` | move the card into an Archive column (created if needed) instead of deleting it |
@@ -92,7 +92,7 @@ Press `?` inside the TUI for the full key list.
 
 Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter` saves, `Esc` or `q` cancels. `Ctrl-Backspace` deletes the word before the cursor. Terminals report that key differently: macOS Terminal and Linux xterm send `Ctrl-h`, Kitty and xterm modifyOtherKeys send a CSI sequence, and Option-Backspace on macOS (Alt-Backspace on Linux) is the same action.
 
-Card info fills the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. A `NORMAL` or `INSERT` badge sits on the card, subtask, and column prompts so the edit mode stays visible while the dialog covers the footer. The new-column and rename-column prompts are a single box around the name.
+Dialogs sit on top of the board. `Esc` closes the front one. Card info fills most of the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. A `NORMAL` or `INSERT` badge sits on the card, subtask, and column prompts. The new-column and rename-column prompts are a single box around the name. Keys in the footer and in dialogs are drawn in the accent color.
 
 `Ctrl-t` opens color themes. `linux-dex` is the default (the Ghostty palette: blue `#4C7CFF`, mint `#7DE1D0`, text `#CDD6F4` on `#313244`). `catppuccin-mocha` is the other built-in. `c` adds a theme, `e` edits a color (`0`–`255` or `#rrggbb`), and `d` deletes a theme you added. The choice is stored in the config file. A hand-written block looks like this:
 
@@ -124,11 +124,11 @@ paper #313244
 
 `[tags]` is the whole tag list. Leave that section out to keep the defaults: `bug`, `feature`, `documentation`, `testing`, `chore`, `refactor`, `performance`, `ci/cd`, `devops`, `deployment`, `security`, and `research`. A line under `[keys.menu]` or `[keys.board]` replaces that action's keys. Digits stay count prefixes, so they cannot be bindings. Board text editing stays on the vim keys.
 
-`c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `q` on either list saves and returns to the board. A subtask has its own summary and a tall description field.
+`c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `Esc` returns to the card. `q` saves and returns to the board. A subtask has its own summary and a tall description field.
 
 On the card screen, `!` cycles priority, `t` edits tags, and `T` edits the due date. Those values are saved with the card.
 
-A card that has sat in the same column for 7 days is drawn in a dim border with its age (`14d`). Moving it to another column resets that clock. Priority, tags, and the due date sit on the card itself so a column can be scanned without opening anything.
+A card that has sat in the same column for 7 days with no priority is drawn in a dim border with its age (`14d`). Moving it to another column resets that clock. `!` cards take a gold border and `!!` cards take the warning border. Tags stay mint. A due date of today is gold, and an overdue date is the warning color, same as a column that is over its WIP limit. The focused column name uses the accent color.
 
 `J` and `K` reorder boards on the board list. On a board they move the focused card. `Shift+Up` and `Shift+Down` do the same reorder.
 

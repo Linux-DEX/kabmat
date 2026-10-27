@@ -21,6 +21,43 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestEscHidesChecklist(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "e", "c", "c", "i")
+	typeRunes(m, "box")
+	press(m, "enter", "esc")
+	if m.top() != layerCard {
+		t.Fatalf("esc should return to the card, layer %d", m.top())
+	}
+	if len(s.Boards[0].Columns[0].Cards[0].Checklist) != 0 {
+		t.Fatal("esc should leave the card unsaved")
+	}
+	press(m, "esc")
+	if m.top() != layerNone {
+		t.Fatalf("esc should close the card, layer %d", m.top())
+	}
+	press(m, "m")
+	view := m.View()
+	if !strings.Contains(view, "Move to") || !strings.Contains(view, "Work") || !strings.Contains(view, "ship") {
+		t.Fatal(view)
+	}
+}
+
 func TestBoardFlow(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))

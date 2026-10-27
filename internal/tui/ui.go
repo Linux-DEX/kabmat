@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type screen int
@@ -242,9 +243,14 @@ func (m *model) View() string {
 	if m.quitting {
 		return ""
 	}
-	if m.top() != layerNone {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.dialog())
+	base := m.frame()
+	if m.top() == layerNone {
+		return base
 	}
+	return overlayCenter(base, m.dialog(), m.width, m.height)
+}
+
+func (m *model) frame() string {
 	bodyH := m.height - 2
 	if bodyH < 1 {
 		bodyH = 1
@@ -781,6 +787,8 @@ func (m *model) leaveSubtasks() {
 func (m *model) checkKey(key string) {
 	n := len(m.edit.checklist)
 	switch key {
+	case "esc":
+		m.pop()
 	case "q":
 		m.leaveSubtasks()
 	case "k":
@@ -824,6 +832,8 @@ func (m *model) checkKey(key string) {
 func (m *model) subListKey(key string) {
 	n := len(m.edit.subtasks)
 	switch key {
+	case "esc":
+		m.pop()
 	case "q":
 		m.leaveSubtasks()
 	case "k":
@@ -1477,30 +1487,41 @@ func (m *model) footer() string {
 			m.cfg.Label("board", "search"), m.cfg.Label("board", "filter"),
 			m.cfg.Label("board", "fold"), m.cfg.Label("board", "help"))
 	}
-	if m.notice != "" {
+	notice := m.notice != ""
+	if notice {
 		hint = m.notice
 	} else if n := len(m.picked); n > 0 && m.screen == screenBoard {
 		hint = fmt.Sprintf("%d selected   H/L move   d delete   A archive   t tag   esc clear", n)
 	} else if m.count > 0 {
 		hint = fmt.Sprintf("count: %d", m.count)
 	}
-	mode := ""
 	editing := m.top() == layerInput || m.top() == layerCard || m.top() == layerSubtask
 	inserting := m.top() == layerInput && m.prompt.insert ||
 		m.top() == layerCard && m.activeField().insert ||
 		m.top() == layerSubtask && m.subField().insert
+	tail := m.position()
 	if editing {
-		mode = modeBadge(inserting)
+		tail += " NORMAL "
+		if inserting {
+			tail = m.position() + " INSERT "
+		}
 	}
-	if p := m.position(); p != "" {
-		mode = p + mode
-	}
-	pad := m.width - lipgloss.Width(hint) - lipgloss.Width(mode)
+	pad := m.width - lipgloss.Width(hint) - lipgloss.Width(tail)
 	if pad < 1 {
-		hint = fit(hint, max(1, m.width-lipgloss.Width(mode)-1))
+		hint = fit(hint, max(1, m.width-lipgloss.Width(tail)-1))
 		pad = 1
 	}
-	return barStyle.Render(hint + strings.Repeat(" ", pad) + mode)
+	var left string
+	if notice {
+		left = noticeStyle.Render(hint)
+	} else {
+		left = paintKeys(hint, barTextStyle, barKeyStyle)
+	}
+	right := barTextStyle.Render(m.position())
+	if editing {
+		right += modeBadge(inserting)
+	}
+	return left + barTextStyle.Render(strings.Repeat(" ", pad)) + right
 }
 
 func modeBadge(insert bool) string {
@@ -1517,7 +1538,7 @@ func modeLine(insert bool, hint string, width int) string {
 	if room < 1 {
 		return badge
 	}
-	return badge + "  " + mutedStyle.Render(fit(hint, room))
+	return badge + "  " + paintKeys(fit(hint, room), mutedStyle, keyStyle)
 }
 
 func (m *model) menuBody(h int) string {
@@ -1538,7 +1559,7 @@ func (m *model) menuBody(h int) string {
 			lines = append(lines, row)
 		}
 	}
-	box := boxOnStyle.Width(innerW).Height(innerH).Render(" Boards \n" + strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit("j/k select   J/K reorder   enter open", textW)))
+	box := boxOnStyle.Width(innerW).Height(innerH).Render(" Boards \n" + strings.Join(lines, "\n") + "\n" + hintLine("j/k select   J/K reorder   enter open", textW))
 	return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
 }
 
@@ -1633,9 +1654,14 @@ func (m *model) columnBox(ci, w, h int) string {
 	})
 	plain, over := columnHeading(col, len(ids), m.filtering && m.search != "")
 	title := fit(plain, textW)
-	if over {
+	switch {
+	case over:
 		title = warnStyle.Render(title)
-	} else {
+	case ci == m.col:
+		title = keyStyle.Render(title)
+	case col.Archive:
+		title = mutedStyle.Render(title)
+	default:
 		title = titleStyle.Render(title)
 	}
 	lines := []string{title}
@@ -1677,7 +1703,7 @@ func (m *model) dialog() string {
 	case layerInput:
 		return m.inputDialog()
 	case layerConfirm:
-		return boxOnStyle.Render(m.confirmMsg + "\n\n" + mutedStyle.Render("y confirm    n cancel"))
+		return boxOnStyle.Render(m.confirmMsg + "\n\n" + hintLine("y confirm    n/esc cancel", 48))
 	case layerCard:
 		return m.cardDialog()
 	case layerChecklist:
@@ -1721,7 +1747,7 @@ func (m *model) moveDialog() string {
 		}
 		lines = append(lines, row)
 	}
-	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render("enter move   q cancel")
+	body := strings.Join(lines, "\n") + "\n" + hintLine("enter move   esc cancel", textW)
 	return panelBox(" Move to ", body, w, room+4, true)
 }
 
@@ -1732,9 +1758,9 @@ func (m *model) helpDialog() string {
 	end := min(len(helpLines), m.helpOff+h-4)
 	var lines []string
 	for _, line := range helpLines[m.helpOff:end] {
-		lines = append(lines, fit(line, textW))
+		lines = append(lines, paintHelp(fit(line, textW)))
 	}
-	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render("j/k scroll    q/esc close")
+	body := strings.Join(lines, "\n") + "\n" + hintLine("j/k scroll    esc close", textW)
 	return panelBox(" Help ", body, w, h, true)
 }
 
@@ -1873,8 +1899,8 @@ func (m *model) subListDialog() string {
 			lines = append(lines, mutedStyle.Render(fit("      "+preview, textW)))
 		}
 	}
-	hint := "j/k select   J/K reorder   g/G ends   c new   e edit   space done   d delete   q board"
-	body := strings.Join(lines, "\n") + "\n\n" + mutedStyle.Render(fit(hint, textW))
+	hint := "j/k select   J/K reorder   g/G ends   c new   e edit   space done   d delete   esc card   q board"
+	body := strings.Join(lines, "\n") + "\n\n" + hintLine(hint, textW)
 	return panelBox(" Subtasks ", body, totalW, totalH, true)
 }
 
@@ -1887,19 +1913,22 @@ func (m *model) checkDialog() string {
 		lines = append(lines, mutedStyle.Render("c to add an item"))
 	}
 	for i, item := range m.edit.checklist {
-		mark := "[ ] "
+		mark := keyStyle.Render("[ ] ")
 		text := item.Content
 		if item.Done {
-			mark = "[x] "
+			mark = tagStyle.Render("[x] ")
 			text = doneStyle.Render(item.Content)
 		}
 		row := fit(mark+text, textW)
 		if i == m.checkSel {
-			row = selStyle.Width(textW).Render(fit(mark+item.Content, textW))
+			row = selStyle.Width(textW).Render(fit("[ ] "+item.Content, textW))
+			if item.Done {
+				row = selStyle.Width(textW).Render(fit("[x] "+item.Content, textW))
+			}
 		}
 		lines = append(lines, row)
 	}
-	hint := mutedStyle.Render(fit("j/k select   J/K reorder   g/G ends   c add   e edit   space toggle   d delete   q board", textW))
+	hint := hintLine("j/k select   J/K reorder   g/G ends   c add   e edit   space toggle   d delete   esc card   q board", textW)
 	return panelBox(" Checklist ", strings.Join(lines, "\n")+"\n\n"+hint, totalW, totalH, true)
 }
 
@@ -1921,10 +1950,11 @@ func cardLines(card store.Card, width int, selected, fold, picked, archive bool)
 	inner := max(1, width-2) // border takes 1 column on each side
 	mark, markW := priMark(card.Priority)
 	title := fit(cardLabel(card), max(1, inner-markW))
+	stale := daysSince(card.Moved) >= staleDays && !archive && card.Priority == 0
 	switch {
 	case selected:
 		title = titleStyle.Render(title)
-	case daysSince(card.Moved) >= staleDays && !archive:
+	case stale:
 		title = staleStyle.Render(title)
 	}
 	lines := []string{mark + title}
@@ -1942,11 +1972,13 @@ func cardLines(card store.Card, width int, selected, fold, picked, archive bool)
 		lines = append(lines, fit(fmt.Sprintf("  %d subtasks", len(card.Subtasks)), inner))
 	} else {
 		for _, sub := range card.Subtasks {
-			mark := "  ▸ "
+			glyph := keyStyle.Render("▸")
+			text := sub.Content
 			if sub.Done {
-				mark = "  ✓ "
+				glyph = doneStyle.Render("✓")
+				text = doneStyle.Render(sub.Content)
 			}
-			lines = append(lines, fit(mark+sub.Content, inner))
+			lines = append(lines, fit("  "+glyph+" "+text, inner))
 		}
 	}
 
@@ -1956,7 +1988,11 @@ func cardLines(card store.Card, width int, selected, fold, picked, archive bool)
 		st = cardOnStyle
 	case picked:
 		st = cardPickStyle
-	case daysSince(card.Moved) >= staleDays && !archive:
+	case card.Priority >= 2 && !archive:
+		st = cardHotStyle
+	case card.Priority == 1 && !archive:
+		st = cardGoldStyle
+	case stale:
 		st = cardStaleStyle
 	}
 	return strings.Split(st.Width(inner).Render(strings.Join(lines, "\n")), "\n")
@@ -2098,6 +2134,10 @@ func shortName(s string) string {
 
 var (
 	barStyle        lipgloss.Style
+	barTextStyle    lipgloss.Style
+	barKeyStyle     lipgloss.Style
+	keyStyle        lipgloss.Style
+	noticeStyle     lipgloss.Style
 	modeStyle       lipgloss.Style
 	titleStyle      = lipgloss.NewStyle().Bold(true)
 	selStyle        lipgloss.Style
@@ -2117,8 +2157,145 @@ var (
 	cardStyle       lipgloss.Style
 	cardOnStyle     lipgloss.Style
 	cardPickStyle   lipgloss.Style
+	cardGoldStyle   lipgloss.Style
+	cardHotStyle    lipgloss.Style
 	cardStaleStyle  lipgloss.Style
 )
+
+func hintLine(s string, width int) string {
+	return paintKeys(fit(s, width), mutedStyle, keyStyle)
+}
+
+// paintKeys colors the first word of each pair. Pairs are split on two or more spaces.
+func paintKeys(hint string, rest, key lipgloss.Style) string {
+	parts := splitHint(hint)
+	var b strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString(rest.Render("   "))
+		}
+		word, action, ok := strings.Cut(p, " ")
+		if ok && isKeyToken(word) && !strings.Contains(p, "#") {
+			b.WriteString(key.Render(word))
+			b.WriteString(rest.Render(" " + action))
+			continue
+		}
+		b.WriteString(rest.Render(p))
+	}
+	return b.String()
+}
+
+func splitHint(hint string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(hint); {
+		if hint[i] != ' ' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(hint) && hint[j] == ' ' {
+			j++
+		}
+		if j-i >= 2 {
+			parts = append(parts, hint[start:i])
+			start = j
+		}
+		i = j
+	}
+	if start <= len(hint) {
+		parts = append(parts, hint[start:])
+	}
+	return parts
+}
+
+func isKeyToken(s string) bool {
+	if s == "" || len([]rune(s)) > 18 {
+		return false
+	}
+	letter := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			letter = true
+		case r >= '0' && r <= '9', r == '/' || r == '+' || r == '?' || r == '!' || r == '[' || r == ']' || r == '-':
+		default:
+			return false
+		}
+	}
+	return letter || s == "?" || s == "/" || s == "!"
+}
+
+func paintHelp(line string) string {
+	if strings.TrimSpace(line) == "" {
+		return line
+	}
+	if !strings.HasPrefix(line, "  ") {
+		return titleStyle.Render(line)
+	}
+	body := line[2:]
+	key, desc, ok := strings.Cut(body, "  ")
+	if !ok {
+		return line
+	}
+	return "  " + keyStyle.Render(strings.TrimRight(key, " ")) + "  " + strings.TrimLeft(desc, " ")
+}
+
+func overlayCenter(bg, fg string, width, height int) string {
+	bgLines := padFrame(bg, width, height)
+	fgLines := strings.Split(strings.TrimRight(fg, "\n"), "\n")
+	fw := 0
+	for _, line := range fgLines {
+		if w := lipgloss.Width(line); w > fw {
+			fw = w
+		}
+	}
+	x := max(0, (width-fw)/2)
+	y := max(0, (height-len(fgLines))/2)
+	for i, line := range fgLines {
+		row := y + i
+		if row < 0 || row >= len(bgLines) {
+			continue
+		}
+		bgLines[row] = spliceLine(bgLines[row], line, x, width)
+	}
+	return strings.Join(bgLines, "\n")
+}
+
+func padFrame(s string, width, height int) []string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		switch {
+		case w < width:
+			lines[i] = line + strings.Repeat(" ", width-w)
+		case w > width:
+			lines[i] = ansi.Truncate(line, width, "")
+		}
+	}
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	return lines
+}
+
+func spliceLine(bg, fg string, x, width int) string {
+	if x >= width {
+		return ansi.Truncate(bg, width, "")
+	}
+	if lipgloss.Width(fg) > width-x {
+		fg = ansi.Truncate(fg, width-x, "")
+	}
+	left := ansi.Cut(bg, 0, x)
+	right := ""
+	if end := x + lipgloss.Width(fg); end < width {
+		right = ansi.Cut(bg, end, width)
+	}
+	return left + fg + right
+}
 
 var helpLines = []string{
 	"Help: j/k scroll, q or esc close",
@@ -2221,6 +2398,7 @@ var helpLines = []string{
 	"  e/enter               edit",
 	"  space                 done",
 	"  d                     delete",
+	"  esc                   back to the card",
 	"  q                     save and return to the board",
 	"",
 	"Subtask edit",
@@ -2252,6 +2430,7 @@ var helpLines = []string{
 	"  e                     edit",
 	"  space                 toggle",
 	"  d                     delete",
+	"  esc                   back to the card",
 	"  q                     save and return to the board",
 }
 
@@ -3011,7 +3190,7 @@ func (m *model) tagDialog() string {
 		}
 	}
 	hint := fmt.Sprintf("%d selected   type filters   space toggle   ctrl+d delete   enter save   esc cancel", n)
-	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit(hint, textW))
+	body := strings.Join(lines, "\n") + "\n" + hintLine(hint, textW)
 	return panelBox(" Tags ", body, w, room+6, true)
 }
 

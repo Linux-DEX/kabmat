@@ -38,7 +38,7 @@ var colorSlots = []struct{ key, label string }{
 
 func defaultPalette() palette {
 	return palette{
-		ink: "#CDD6F4", paper: "#313244", accent: "#4C7CFF", warn: "#C4A7FF", gold: "#7EC8FF",
+		ink: "#CDD6F4", paper: "#313244", accent: "#4C7CFF", warn: "#FF6B8A", gold: "#F5C16C",
 		tag: "#7DE1D0", muted: "#5C6180", pick: "#B49AFF", card: "#5C6180", archive: "#313244",
 	}
 }
@@ -187,8 +187,12 @@ func applyPalette(p palette) {
 	warn := lipgloss.Color(p.warn)
 	gold := lipgloss.Color(p.gold)
 	barStyle = lipgloss.NewStyle().Foreground(ink).Background(paper)
+	barTextStyle = barStyle
+	keyStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	barKeyStyle = keyStyle.Background(paper)
 	modeStyle = lipgloss.NewStyle().Foreground(ink).Background(accent)
-	selStyle = lipgloss.NewStyle().Foreground(ink).Background(paper)
+	selStyle = lipgloss.NewStyle().Foreground(ink).Background(accent).Bold(true)
+	noticeStyle = lipgloss.NewStyle().Foreground(warn).Background(paper).Bold(true)
 	warnStyle = lipgloss.NewStyle().Foreground(warn).Bold(true)
 	priStyle = lipgloss.NewStyle().Foreground(gold).Bold(true)
 	priHotStyle = lipgloss.NewStyle().Foreground(warn).Bold(true)
@@ -204,6 +208,8 @@ func applyPalette(p palette) {
 	cardStyle = lipgloss.NewStyle().Border(border).BorderForeground(lipgloss.Color(p.card))
 	cardOnStyle = cardStyle.BorderForeground(accent)
 	cardPickStyle = cardStyle.BorderForeground(lipgloss.Color(p.pick))
+	cardGoldStyle = cardStyle.BorderForeground(gold)
+	cardHotStyle = cardStyle.BorderForeground(warn)
 	cardStaleStyle = cardStyle.BorderForeground(lipgloss.Color(p.archive))
 }
 
@@ -553,11 +559,11 @@ func (m *model) themeDialog() string {
 			}
 			lines = append(lines, row)
 		}
-		hint := "j/k select   enter edit   q back"
+		hint := hintLine("j/k select   enter edit   esc back", textW)
 		if m.notice != "" {
-			hint = m.notice
+			hint = mutedStyle.Render(fit(m.notice, textW))
 		}
-		body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit(hint, textW))
+		body := strings.Join(lines, "\n") + "\n" + hint
 		return panelBox(" "+s.name+" ", body, w, h, true)
 	}
 	for i, s := range m.schemes {
@@ -573,10 +579,10 @@ func (m *model) themeDialog() string {
 		lines = append(lines, row)
 	}
 	path := m.cfg.Path
-	hint := "j/k select   enter apply   c new   e colors   d delete   q cancel"
+	hint := hintLine("j/k select   enter apply   c new   e colors   d delete   esc cancel", textW)
 	if m.notice != "" {
-		hint = m.notice
+		hint = mutedStyle.Render(fit(m.notice, textW))
 	}
-	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit(path, textW)) + "\n" + mutedStyle.Render(fit(hint, textW))
+	body := strings.Join(lines, "\n") + "\n" + mutedStyle.Render(fit(path, textW)) + "\n" + hint
 	return panelBox(" Color theme ", body, w, h, true)
 }
