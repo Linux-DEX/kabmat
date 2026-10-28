@@ -121,6 +121,7 @@ type model struct {
 	clip        store.Card
 	hasClip     bool
 	filtering   bool
+	filterWas   bool
 	foldSubs    bool
 	seenBoard   bool
 	cfg         config.Config
@@ -433,6 +434,11 @@ func (m *model) boardKey(key string) {
 		if len(m.picked) > 0 {
 			m.picked = nil
 			m.notice = "selection cleared"
+			return
+		}
+		if m.filtering {
+			m.filtering = false
+			m.notice = "showing all cards"
 		}
 	case "select":
 		m.togglePick()
@@ -1192,25 +1198,33 @@ func (m *model) toggleFilter() {
 	m.filtering = !m.filtering
 	if m.filtering {
 		m.snapShown()
+		return
 	}
+	m.notice = "showing all cards"
 }
 
 func (m *model) snapShown() {
-	ids := m.shownIDs(m.col)
-	if len(ids) == 0 {
+	b := m.curBoard()
+	if b == nil {
 		return
 	}
-	cur := m.cardIndex(m.col)
-	best := ids[0]
-	for _, id := range ids {
-		if id >= cur {
-			best = id
-			break
+	for c := range b.Columns {
+		ids := m.shownIDs(c)
+		if len(ids) == 0 {
+			continue
 		}
-		best = id
+		cur := m.cardIndex(c)
+		best := ids[0]
+		for _, id := range ids {
+			if id >= cur {
+				best = id
+				break
+			}
+			best = id
+		}
+		m.growCardSel()
+		m.cardSel[c] = best
 	}
-	m.growCardSel()
-	m.cardSel[m.col] = best
 }
 
 func (m *model) shownIDs(ci int) []int {
@@ -1219,10 +1233,11 @@ func (m *model) shownIDs(ci int) []int {
 		return nil
 	}
 	cards := b.Columns[ci].Cards
-	filter := m.filtering && m.search != ""
+	term := m.searchTerm()
+	filter := m.filtering && term != ""
 	ids := make([]int, 0, len(cards))
 	for i := range cards {
-		if !filter || cardMatches(&cards[i], m.search) {
+		if !filter || cardMatches(&cards[i], term) {
 			ids = append(ids, i)
 		}
 	}
@@ -1475,11 +1490,15 @@ func (m *model) footer() string {
 		m.cfg.Label("menu", "move-down"), m.cfg.Label("menu", "move-up"),
 		m.cfg.Label("menu", "new"), m.cfg.Label("menu", "open"), m.cfg.Label("menu", "help"))
 	if m.screen == screenBoard {
-		hint = fmt.Sprintf("%s back   %s/%s focus   %s/%s yank/paste   %s search   %s filter   %s fold   %s help",
-			m.cfg.Label("board", "back"), m.cfg.Label("board", "down"), m.cfg.Label("board", "up"),
-			m.cfg.Label("board", "yank"), m.cfg.Label("board", "paste"),
-			m.cfg.Label("board", "search"), m.cfg.Label("board", "filter"),
-			m.cfg.Label("board", "fold"), m.cfg.Label("board", "help"))
+		if m.filtering && m.search != "" {
+			hint = fmt.Sprintf("/%s   %s show all", m.search, m.cfg.Label("board", "filter"))
+		} else {
+			hint = fmt.Sprintf("%s back   %s/%s focus   %s/%s yank/paste   %s search   %s filter   %s fold   %s help",
+				m.cfg.Label("board", "back"), m.cfg.Label("board", "down"), m.cfg.Label("board", "up"),
+				m.cfg.Label("board", "yank"), m.cfg.Label("board", "paste"),
+				m.cfg.Label("board", "search"), m.cfg.Label("board", "filter"),
+				m.cfg.Label("board", "fold"), m.cfg.Label("board", "help"))
+		}
 	}
 	notice := m.notice != ""
 	if notice {
@@ -1619,7 +1638,7 @@ func (m *model) columnBox(ci, w, h int) string {
 	innerH := max(2, h-2)
 	cardRoom := max(1, innerH-1)
 	textW := max(1, innerW-2)
-	if ci == m.col && m.filtering && m.search != "" {
+	if ci == m.col && m.filtering && m.searchTerm() != "" {
 		m.snapShown()
 	}
 	focus := m.cardIndex(ci)
@@ -1646,7 +1665,7 @@ func (m *model) columnBox(ci, w, h int) string {
 	start := m.scrollShown(ci, len(ids), selPos, cardRoom, func(i int) int {
 		return len(ensure(i))
 	})
-	plain, over := columnHeading(col, len(ids), m.filtering && m.search != "")
+	plain, over := columnHeading(col, len(ids), m.filtering && m.searchTerm() != "")
 	title := fit(plain, textW)
 	switch {
 	case over:
@@ -2339,7 +2358,7 @@ var helpLines = []string{
 	"  H/L                   move card across",
 	"  m                     move card to a column",
 	"  space                 select for bulk move, delete, tag, due",
-	"  esc                   clear the selection",
+	"  esc                   clear the selection, or show every card when a search filter is on",
 	"  w                     set the column WIP limit (0 clears)",
 	"  W                     toggle the finished-checklist rule",
 	"  A                     archive the card (keeps it off the working board)",
@@ -2361,11 +2380,11 @@ var helpLines = []string{
 	"  d                     delete card",
 	"  y / p                 yank / paste card",
 	"  Y                     duplicate card",
-	"  f                     filter cards by the last search",
+	"  f / esc               show every card again while a search filter is on",
 	"  z                     fold subtasks on unfocused cards",
 	"  u / ctrl+r            undo / redo",
 	"  ctrl+t                color theme",
-	"  /                     search title, description, checklist, subtasks",
+	"  /                     search every column and show only matching cards",
 	"  n/N                   next/previous match",
 	"  5j, 3L, ...           count prefix for movement keys",
 	"",
@@ -2514,10 +2533,18 @@ func (m *model) position() string {
 	return s + " "
 }
 
+func (m *model) searchTerm() string {
+	if m.searching {
+		return m.searchBuf.value()
+	}
+	return m.search
+}
+
 func (m *model) startSearch() {
 	m.count = 0
 	m.searching = true
 	m.searchMiss = false
+	m.filterWas = m.filtering
 	m.searchBuf = newField("", false)
 	m.searchBuf.insert = true
 	m.searchCol = m.col
@@ -2536,20 +2563,26 @@ func (m *model) searchKey(key string, runes []rune) {
 	case "esc":
 		m.searching = false
 		m.restoreSearchStart()
+		m.filtering = m.filterWas
 		return
 	case "enter":
 		m.searching = false
 		term := m.searchBuf.value()
 		if term == "" {
 			m.restoreSearchStart()
-			m.findNext(1)
+			m.filtering = false
+			m.notice = "showing all cards"
 			return
 		}
 		m.search = term
 		if m.searchMiss {
 			m.restoreSearchStart()
+			m.filtering = m.filterWas
 			m.notice = "pattern not found: " + term
+			return
 		}
+		m.filtering = true
+		m.snapShown()
 		return
 	case "ctrl+u":
 		m.searchBuf = newField("", false)
@@ -2577,23 +2610,29 @@ func (m *model) incSearch() {
 	m.searchMiss = false
 	term := m.searchBuf.value()
 	if term == "" {
+		m.filtering = false
 		return
 	}
+	m.filtering = true
 	m.searchMiss = !m.findFrom(term, m.searchCol, m.cardIndex(m.searchCol), 1, true)
+	m.snapShown()
 }
 
 // findNext repeats the last confirmed search (n / N).
-func (m *model) findNext(dir int) {
+func (m *model) findNext(dir int) bool {
 	if m.curBoard() == nil {
-		return
+		return false
 	}
 	if m.search == "" {
 		m.notice = "no search term, press / first"
-		return
+		return false
 	}
 	if !m.findFrom(m.search, m.col, m.cardIndex(m.col), dir, false) {
 		m.notice = "pattern not found: " + m.search
+		return false
 	}
+	m.notice = ""
+	return true
 }
 
 // findFrom looks for term starting at card (c0, i0), wrapping around the

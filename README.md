@@ -63,7 +63,7 @@ Press `?` inside the TUI for the full key list.
 | `H` / `L` | move the card to the left / right column |
 | `m` | move the focused card to a chosen column |
 | `Space` | select the card; bulk move, delete, tag, and due use the selection |
-| `Esc` | clear the selection, or close the dialog in front of the board |
+| `Esc` | clear the selection, show every card when a search filter is on, or close the dialog in front of the board |
 | `w` | set the column WIP limit (`0` clears it). The header and the column title show `count/limit`, and the column turns red when it is over |
 | `W` | toggle a rule: cards can enter this column only when the checklist is finished. A `*` sits on the column name |
 | `A` | move the card into an Archive column (created if needed) instead of deleting it |
@@ -83,8 +83,8 @@ Press `?` inside the TUI for the full key list.
 | `u` / `Ctrl-r` | undo / redo |
 | `Ctrl-t` | color theme |
 | `s` | open subtasks for the focused card |
-| `/` | search titles, descriptions, checklist items, and subtask titles |
-| `f` | show only cards matching the last search |
+| `/` | filter every column to cards that match. Titles, descriptions, checklist items, and subtask titles all count |
+| `f` | show every card again. Press it once more to return to the matches |
 | `z` | fold subtasks on cards that are not focused |
 | `q` | back |
 

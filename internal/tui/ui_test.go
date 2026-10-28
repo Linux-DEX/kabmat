@@ -237,7 +237,6 @@ func TestYankFilterFold(t *testing.T) {
 	if got := m.cardIndex(0); got != 0 {
 		t.Fatalf("search card %d", got)
 	}
-	press(m, "f")
 	view = m.View()
 	if strings.Contains(view, "beta") || !strings.Contains(view, "1/2") {
 		t.Fatalf("filter:\n%s", view)
@@ -251,6 +250,56 @@ func TestYankFilterFold(t *testing.T) {
 	todo := s.Boards[0].Columns[0].Cards
 	if len(todo) != 3 || todo[1].Content != "alpha" || m.notice != "duplicated" {
 		t.Fatalf("dup notice=%q cards=%+v", m.notice, todo)
+	}
+}
+
+func TestSearchFiltersEveryColumn(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil || s.AddColumn(0, "Done") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "alpha"}); err != nil || s.AddCard(0, 0, store.Card{Content: "beta"}) != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 1, store.Card{Content: "alpha done"}); err != nil || s.AddCard(0, 1, store.Card{Content: "gamma"}) != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 120, 40
+	press(m, "/")
+	typeRunes(m, "alpha")
+	view := m.View()
+	if strings.Contains(view, "beta") || strings.Contains(view, "gamma") || !strings.Contains(view, "alpha") || !strings.Contains(view, "alpha done") {
+		t.Fatalf("live search:\n%s", view)
+	}
+	press(m, "esc")
+	view = m.View()
+	if !strings.Contains(view, "beta") || !strings.Contains(view, "gamma") {
+		t.Fatalf("esc should restore the board:\n%s", view)
+	}
+	press(m, "/")
+	typeRunes(m, "alpha")
+	press(m, "enter")
+	view = m.View()
+	if strings.Contains(view, "beta") || strings.Contains(view, "gamma") || !strings.Contains(view, "Todo 1/2") || !strings.Contains(view, "Done 1/2") {
+		t.Fatalf("confirmed:\n%s", view)
+	}
+	press(m, "f")
+	view = m.View()
+	if !strings.Contains(view, "beta") || !strings.Contains(view, "gamma") || !strings.Contains(view, "Todo 2") || !strings.Contains(view, "Done 2") {
+		t.Fatalf("filter off:\n%s", view)
+	}
+	press(m, "f", "esc")
+	view = m.View()
+	if !strings.Contains(view, "beta") || !strings.Contains(view, "gamma") || !strings.Contains(view, "Todo 2") || !strings.Contains(view, "Done 2") {
+		t.Fatalf("esc clears the filter:\n%s", view)
 	}
 }
 
