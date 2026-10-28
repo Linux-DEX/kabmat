@@ -325,6 +325,13 @@ func TestRejectsUnsafeTagsAndControls(t *testing.T) {
 	if tags := ParseTags("#Bug ok ../etc a\x1b[31m b"); len(tags) != 3 || tags[0] != "bug" || tags[1] != "ok" || tags[2] != "b" {
 		t.Fatalf("%v", tags)
 	}
+	if _, err := CheckTags("ok ../etc"); err == nil {
+		t.Fatal("bad tag should be refused")
+	}
+	tags, err := CheckTags("#Work work, HOME")
+	if err != nil || len(tags) != 2 || tags[0] != "work" || tags[1] != "home" {
+		t.Fatalf("%v %v", tags, err)
+	}
 	boards, err := parse("Work\n Todo\n  hello\x1b[31mworld\n")
 	if err != nil {
 		t.Fatal(err)

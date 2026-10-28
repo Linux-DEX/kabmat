@@ -528,7 +528,7 @@ func TestCardEditModeBadge(t *testing.T) {
 	}
 }
 
-func TestTagPicker(t *testing.T) {
+func TestTagPrompt(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
 	if err != nil {
@@ -546,50 +546,75 @@ func TestTagPicker(t *testing.T) {
 	}
 	m.width, m.height = 80, 30
 	press(m, "t")
-	view := m.dialog()
-	for _, tag := range []string{"#bug", "#feature", "#documentation", "#ci/cd", "#deployment", "#research", "#legacy"} {
-		if !strings.Contains(view, tag) {
-			t.Fatalf("missing %s\n%s", tag, view)
-		}
+	if m.top() != layerInput || strings.Contains(m.dialog(), "#bug") || strings.Contains(m.dialog(), "#feature") {
+		t.Fatalf("preset list\n%s", m.dialog())
 	}
-	if !strings.Contains(view, "[x] #legacy") {
-		t.Fatalf("legacy should start selected\n%s", view)
+	if !strings.Contains(m.dialog(), "legacy") {
+		t.Fatalf("current tags\n%s", m.dialog())
 	}
-	typeRunes(m, "dep")
-	filtered := m.dialog()
-	if strings.Contains(filtered, "#bug") || strings.Contains(filtered, "#devops") || !strings.Contains(filtered, "#deployment") {
-		t.Fatalf("filter\n%s", filtered)
-	}
-	press(m, "esc", "e", "t")
-	if m.top() != layerTag {
-		t.Fatalf("layer %d", m.top())
-	}
-	typeRunes(m, "legacy")
-	press(m, "space")
-	for range len("legacy") {
-		press(m, "backspace")
-	}
-	typeRunes(m, "bug")
-	press(m, "space", "enter")
-	if got := m.edit.tags; len(got) != 1 || got[0] != "bug" {
-		t.Fatalf("card edit tags %+v", got)
-	}
-	if len(s.Boards[0].Columns[0].Cards[0].Tags) != 1 || s.Boards[0].Columns[0].Cards[0].Tags[0] != "legacy" {
-		t.Fatal("store changed before save")
-	}
-	press(m, "enter")
-	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 1 || tags[0] != "bug" {
-		t.Fatalf("saved %+v", tags)
-	}
-	press(m, "t")
-	typeRunes(m, "spike")
-	if !strings.Contains(m.dialog(), "enter adds #spike") {
-		t.Fatalf("add row\n%s", m.dialog())
-	}
+	typeRunes(m, " bug, home")
 	press(m, "enter")
 	tags := s.Boards[0].Columns[0].Cards[0].Tags
-	if len(tags) != 2 || tags[0] != "bug" || tags[1] != "spike" || !strings.Contains(m.View(), "#spike") {
-		t.Fatalf("custom %+v\n%s", tags, m.View())
+	if len(tags) != 3 || tags[0] != "legacy" || tags[1] != "bug" || tags[2] != "home" || !strings.Contains(m.View(), "#home") {
+		t.Fatalf("saved %+v\n%s", tags, m.View())
+	}
+	press(m, "t")
+	for range "legacy bug home" {
+		press(m, "backspace")
+	}
+	press(m, "enter")
+	if len(s.Boards[0].Columns[0].Cards[0].Tags) != 0 {
+		t.Fatalf("clear %+v", s.Boards[0].Columns[0].Cards[0].Tags)
+	}
+
+	press(m, "t")
+	typeRunes(m, "../etc")
+	press(m, "enter")
+	if m.top() != layerInput || !strings.Contains(m.dialog(), "bad tag") {
+		t.Fatalf("bad tag should stay open\n%s", m.dialog())
+	}
+	if len(s.Boards[0].Columns[0].Cards[0].Tags) != 0 {
+		t.Fatalf("bad tag wiped %+v", s.Boards[0].Columns[0].Cards[0].Tags)
+	}
+	press(m, "esc", "esc")
+	if m.top() != layerNone {
+		t.Fatalf("esc should close the tag prompt, layer %d", m.top())
+	}
+
+	press(m, "t")
+	typeRunes(m, "#Work work, HOME")
+	press(m, "enter")
+	tags = s.Boards[0].Columns[0].Cards[0].Tags
+	if len(tags) != 2 || tags[0] != "work" || tags[1] != "home" {
+		t.Fatalf("normalized %+v", tags)
+	}
+	press(m, "u")
+	if len(s.Boards[0].Columns[0].Cards[0].Tags) != 0 {
+		t.Fatalf("undo %+v", s.Boards[0].Columns[0].Cards[0].Tags)
+	}
+
+	press(m, "t")
+	typeRunes(m, "keep")
+	press(m, "enter", "e", "t")
+	typeRunes(m, " extra")
+	press(m, "enter")
+	if got := m.edit.tags; len(got) != 2 || got[0] != "keep" || got[1] != "extra" {
+		t.Fatalf("card edit %+v", got)
+	}
+	press(m, "esc")
+	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 1 || tags[0] != "keep" {
+		t.Fatalf("discard card edit %+v", tags)
+	}
+
+	press(m, "c", "i")
+	typeRunes(m, "other")
+	press(m, "enter", "space", "k", "space", "t")
+	typeRunes(m, "bulk")
+	press(m, "enter")
+	for _, card := range s.Boards[0].Columns[0].Cards {
+		if len(card.Tags) != 1 || card.Tags[0] != "bulk" {
+			t.Fatalf("bulk %q %+v", card.Content, card.Tags)
+		}
 	}
 }
 
@@ -642,47 +667,6 @@ func TestUserTheme(t *testing.T) {
 	}
 }
 
-func TestDeleteAddedTag(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("KABMAT_CONFIG", filepath.Join(dir, "config"))
-	data := t.TempDir()
-	s, err := store.Load(filepath.Join(data, "data"), filepath.Join(data, "data_bkp"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddCard(0, 0, store.Card{Content: "ship", Tags: []string{"spike", "bug"}}); err != nil {
-		t.Fatal(err)
-	}
-	m, err := newModel(s, "Work")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.width, m.height = 80, 30
-	press(m, "t")
-	if m.tagList[m.tagSel] != "bug" {
-		t.Fatalf("sel %s", m.tagList[m.tagSel])
-	}
-	press(m, "ctrl+d")
-	if m.notice != "deleted #bug" || strings.Contains(m.dialog(), "#bug") {
-		t.Fatalf("delete bug %q\n%s", m.notice, m.dialog())
-	}
-	typeRunes(m, "spike")
-	press(m, "ctrl+d")
-	if strings.Contains(m.dialog(), "#spike") || m.notice != "deleted #spike" {
-		t.Fatalf("delete notice %q\n%s", m.notice, m.dialog())
-	}
-	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 0 {
-		t.Fatalf("card tags %+v", tags)
-	}
-	press(m, "esc", "t")
-	if strings.Contains(m.dialog(), "#spike") {
-		t.Fatalf("spike returned\n%s", m.dialog())
-	}
-}
-
 func TestConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
@@ -717,7 +701,6 @@ func TestConfigFile(t *testing.T) {
 	body := "" +
 		"# comment\n\n" +
 		"theme dusk\n\n" +
-		"[tags]\n#review\n\n" +
 		"[keys.menu]\nquit x\n\n" +
 		"[keys.board]\ntags F\n\n" +
 		"[theme.dusk]\naccent #112233\n"
@@ -755,14 +738,14 @@ func TestConfigFile(t *testing.T) {
 	}
 	board.width, board.height = 100, 30
 	press(board, "t")
-	if board.top() == layerTag {
+	if board.top() == layerInput {
 		t.Fatal("t should not open tags")
 	}
 	press(board, "F")
-	if board.top() != layerTag || !strings.Contains(board.dialog(), "#review") {
+	if board.top() != layerInput || !strings.Contains(board.dialog(), "Tags") {
 		t.Fatalf("tags\n%s", board.dialog())
 	}
-	press(board, "esc", "2", "j")
+	press(board, "esc", "esc", "2", "j")
 	if board.cardIndex(0) != 2 {
 		t.Fatalf("count move landed on %d", board.cardIndex(0))
 	}
@@ -775,7 +758,7 @@ func TestConfigFile(t *testing.T) {
 
 func TestConfigKeyAndTag(t *testing.T) {
 	path := mConfigPath(t)
-	body := "theme linux-dex\n\n[tags]\nspike\n\n[keys.board]\nnew-card x\n"
+	body := "theme linux-dex\n\n[keys.board]\nnew-card x\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -805,8 +788,8 @@ func TestConfigKeyAndTag(t *testing.T) {
 	}
 	m.pop()
 	press(m, "t")
-	if !strings.Contains(m.dialog(), "#spike") {
-		t.Fatalf("config tag\n%s", m.dialog())
+	if m.top() != layerInput || strings.Contains(m.dialog(), "#bug") {
+		t.Fatalf("tag prompt\n%s", m.dialog())
 	}
 }
 

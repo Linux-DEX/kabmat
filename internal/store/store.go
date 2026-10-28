@@ -366,16 +366,34 @@ func appendTag(tags []string, tag string) []string {
 	return append(tags, tag)
 }
 
-// ParseTags splits "#work, home" into unique tags.
+// ParseTags splits "#work, home" into unique tags. Tokens that are not tags are dropped.
 func ParseTags(s string) []string {
-	s = strings.ReplaceAll(s, ",", " ")
-	var out []string
-	for _, p := range strings.Fields(s) {
-		if tag, ok := cleanTag(p); ok {
-			out = appendTag(out, tag)
-		}
-	}
+	out, _ := collectTags(s)
 	return out
+}
+
+// CheckTags is ParseTags that refuses the whole value when any token is not a tag.
+func CheckTags(s string) ([]string, error) {
+	out, bad := collectTags(s)
+	if bad != "" {
+		return nil, fmt.Errorf("bad tag %q", bad)
+	}
+	return out, nil
+}
+
+func collectTags(s string) (out []string, bad string) {
+	s = strings.ReplaceAll(s, ",", " ")
+	for _, p := range strings.Fields(s) {
+		tag, ok := cleanTag(p)
+		if !ok {
+			if bad == "" {
+				bad = strings.TrimPrefix(strings.TrimSpace(p), "#")
+			}
+			continue
+		}
+		out = appendTag(out, tag)
+	}
+	return out, bad
 }
 
 func today() string {

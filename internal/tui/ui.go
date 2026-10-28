@@ -37,7 +37,6 @@ const (
 	layerSubtask
 	layerMove
 	layerTheme
-	layerTag
 )
 
 type inputKind int
@@ -54,7 +53,6 @@ const (
 	inputDue
 	inputNewTheme
 	inputThemeColor
-	inputNewTag
 )
 
 const staleDays = 7
@@ -142,11 +140,6 @@ type model struct {
 	schemeSel  int
 	colorSel   int
 	schemeEdit bool
-
-	tagList   []string
-	tagOn     map[string]bool
-	tagSel    int
-	tagFilter string
 }
 
 func Run(s *store.Store, open string) error {
@@ -293,8 +286,6 @@ func (m *model) onKey(key string, runes []rune) {
 		m.moveKey(key)
 	case layerTheme:
 		m.themeKey(key)
-	case layerTag:
-		m.tagKey(key)
 	default:
 		m.normalKey(key)
 	}
@@ -538,6 +529,12 @@ func (m *model) inputKey(key string, runes []rune) {
 	if !submit {
 		return
 	}
+	if m.promptKind == inputTags {
+		if _, err := store.CheckTags(m.prompt.value()); err != nil {
+			m.notice = err.Error()
+			return
+		}
+	}
 	value := m.prompt.value()
 	fromCard := len(m.stack) >= 2 && m.stack[len(m.stack)-2] == layerCard
 	m.pop()
@@ -571,7 +568,7 @@ func (m *model) inputKey(key string, runes []rune) {
 	case inputWIP:
 		err = m.setWIP(value)
 	case inputTags:
-		tags := store.ParseTags(value)
+		tags, _ := store.CheckTags(value)
 		if fromCard {
 			m.edit.tags = tags
 		} else {
@@ -596,12 +593,12 @@ func (m *model) inputKey(key string, runes []rune) {
 		m.addScheme(value)
 	case inputThemeColor:
 		m.setSchemeColor(value)
-	case inputNewTag:
-		m.addTypedTag(value)
 	}
 	if err != nil {
 		m.notice = err.Error()
+		return
 	}
+	m.notice = ""
 }
 
 func (m *model) confirmKey(key string) {
@@ -1243,9 +1240,6 @@ func (m *model) openInput(kind inputKind, title, value string) {
 	m.promptKind = kind
 	m.promptTitle = title
 	m.prompt = newField(value, false)
-	if kind == inputNewTag {
-		m.prompt.insert = true
-	}
 	m.push(layerInput)
 }
 
@@ -1716,8 +1710,6 @@ func (m *model) dialog() string {
 		return m.moveDialog()
 	case layerTheme:
 		return m.themeDialog()
-	case layerTag:
-		return m.tagDialog()
 	default:
 		return ""
 	}
@@ -1770,7 +1762,11 @@ func (m *model) inputDialog() string {
 	}
 	w := max(24, min(48, m.width*2/5))
 	textW := max(8, w-4)
-	body := m.promptTitle + "\n" + m.prompt.render(textW) + "\n" + modeLine(m.prompt.insert, "i insert   enter save   esc cancel", textW)
+	hint := "i insert   enter save   esc cancel"
+	if m.notice != "" {
+		hint = m.notice
+	}
+	body := m.promptTitle + "\n" + m.prompt.render(textW) + "\n" + modeLine(m.prompt.insert, hint, textW)
 	return boxOnStyle.Width(w).Render(body)
 }
 
@@ -2349,7 +2345,7 @@ var helpLines = []string{
 	"  A                     archive the card (keeps it off the working board)",
 	"  v                     hide or show archive columns",
 	"  !                     cycle priority: none, !, !!",
-	"  t                     filter tags from the config, space toggles, ctrl+d deletes",
+	"  t                     set tags, separated by spaces or commas",
 	"  T                     due date YYYY-MM-DD, or +days to snooze",
 	"  o                     open the first http(s) link on the card",
 	"  X                     clear finished checklist items",
@@ -2384,7 +2380,7 @@ var helpLines = []string{
 	"  tab                   switch content/description",
 	"  i                     insert",
 	"  ! / t / T             priority, tags, due date",
-	"  tags                  type to filter, space toggles, enter adds a new tag when nothing matches",
+	"  tags                  type several, separated by spaces or commas",
 	"  enter                 save",
 	"  q                     return to the board",
 	"  c                     checklist",
@@ -2416,9 +2412,8 @@ var helpLines = []string{
 	"  q                     cancel",
 	"",
 	"Config  ~/.config/kabmat/config",
-	"  missing file          built-in theme, tags, and keys are used",
+	"  missing file          built-in theme and keys are used",
 	"  theme                 linux-dex or catppuccin-mocha, or [theme.name]",
-	"  [tags]                the tag list. Omit the section to keep the defaults",
 	"  [keys.menu]           menu bindings, one action then its keys",
 	"  [keys.board]          board bindings, same shape",
 	"",
@@ -2853,345 +2848,18 @@ func (m *model) cyclePriority() {
 }
 
 func (m *model) openTags() {
-	cur := m.currentTags()
-	m.tagList = m.tagChoices(cur)
-	m.tagOn = map[string]bool{}
-	for _, tag := range cur {
-		m.tagOn[tag] = true
-	}
-	m.tagFilter = ""
-	m.tagSel = 0
-	for i, tag := range m.tagList {
-		if m.tagOn[tag] {
-			m.tagSel = i
-			break
-		}
-	}
-	m.push(layerTag)
-}
-
-func (m *model) currentTags() []string {
+	var cur []string
 	if m.top() == layerCard {
-		return cloneTags(m.edit.tags)
-	}
-	if len(m.picked) == 0 {
+		cur = cloneTags(m.edit.tags)
+	} else if len(m.picked) == 0 {
 		if t := m.targets(); len(t) == 1 {
-			return cloneTags(m.curBoard().Columns[t[0][0]].Cards[t[0][1]].Tags)
+			cur = cloneTags(m.curBoard().Columns[t[0][0]].Cards[t[0][1]].Tags)
 		}
 	}
-	return nil
-}
-
-func (m *model) tagChoices(selected []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(tag string) {
-		if tag == "" || seen[tag] {
-			return
-		}
-		seen[tag] = true
-		out = append(out, tag)
-	}
-	for _, tag := range m.cfg.Tags {
-		add(tag)
-	}
-	if m.store != nil {
-		for i := range m.store.Boards {
-			for j := range m.store.Boards[i].Columns {
-				for k := range m.store.Boards[i].Columns[j].Cards {
-					for _, tag := range m.store.Boards[i].Columns[j].Cards[k].Tags {
-						add(tag)
-					}
-				}
-			}
-		}
-	}
-	for _, tag := range selected {
-		add(tag)
-	}
-	return out
-}
-
-func (m *model) visibleTags() []int {
-	q := strings.ToLower(m.tagFilter)
-	var ids []int
-	for i, tag := range m.tagList {
-		if q == "" || strings.Contains(tag, q) {
-			ids = append(ids, i)
-		}
-	}
-	return ids
-}
-
-func (m *model) snapTagSel() {
-	ids := m.visibleTags()
-	if len(ids) == 0 {
-		return
-	}
-	for _, id := range ids {
-		if id == m.tagSel {
-			return
-		}
-	}
-	m.tagSel = ids[0]
-}
-
-func (m *model) moveTag(dir int) {
-	ids := m.visibleTags()
-	if len(ids) == 0 {
-		return
-	}
-	pos := 0
-	for i, id := range ids {
-		if id == m.tagSel {
-			pos = i
-			break
-		}
-	}
-	next := pos + dir
-	if next < 0 || next >= len(ids) {
-		return
-	}
-	m.tagSel = ids[next]
-}
-
-func (m *model) tagKey(key string) {
-	switch key {
-	case "q", "esc":
-		m.pop()
-	case "up", "ctrl+p":
-		m.moveTag(-1)
-	case "down", "ctrl+n":
-		m.moveTag(1)
-	case "backspace":
-		r := []rune(m.tagFilter)
-		if len(r) > 0 {
-			m.tagFilter = string(r[:len(r)-1])
-			m.snapTagSel()
-		}
-	case "ctrl+u":
-		m.tagFilter = ""
-		m.snapTagSel()
-	case "ctrl+d":
-		m.deleteAddedTag()
-	case " ", "space":
-		ids := m.visibleTags()
-		if len(ids) == 0 {
-			if m.tagFilter != "" {
-				m.addTypedTag(m.tagFilter)
-				m.tagFilter = ""
-			}
-			return
-		}
-		m.snapTagSel()
-		tag := m.tagList[m.tagSel]
-		if m.tagOn == nil {
-			m.tagOn = map[string]bool{}
-		}
-		m.tagOn[tag] = !m.tagOn[tag]
-	case "enter":
-		if m.tagFilter != "" && len(m.visibleTags()) == 0 {
-			m.addTypedTag(m.tagFilter)
-		}
-		m.applyPickedTags()
-		m.pop()
-	default:
-		if r, ok := tagFilterRune(key); ok {
-			m.tagFilter += string(r)
-			m.snapTagSel()
-		}
-	}
-}
-
-func tagFilterRune(key string) (rune, bool) {
-	r := []rune(key)
-	if len(r) != 1 {
-		return 0, false
-	}
-	c := r[0]
-	switch {
-	case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		return c, true
-	case c >= 'A' && c <= 'Z':
-		return c - 'A' + 'a', true
-	case c == '/' || c == '-' || c == '_' || c == '.':
-		return c, true
-	default:
-		return 0, false
-	}
-}
-
-func (m *model) deleteAddedTag() {
-	if len(m.tagList) == 0 {
-		return
-	}
-	m.snapTagSel()
-	if m.tagSel < 0 || m.tagSel >= len(m.tagList) {
-		return
-	}
-	tag := m.tagList[m.tagSel]
-	m.tagList = append(m.tagList[:m.tagSel], m.tagList[m.tagSel+1:]...)
-	delete(m.tagOn, tag)
-	if m.tagSel >= len(m.tagList) && m.tagSel > 0 {
-		m.tagSel--
-	}
-	var tags []string
-	for _, have := range m.cfg.Tags {
-		if have != tag {
-			tags = append(tags, have)
-		}
-	}
-	m.cfg.Tags = tags
-	m.tagFilter = ""
-	m.stripTag(tag)
-	if err := m.saveConfig(); err != nil {
-		m.notice = err.Error()
-		return
-	}
-	m.notice = "deleted #" + tag
-}
-
-func (m *model) stripTag(tag string) {
-	var kept []string
-	for _, have := range m.edit.tags {
-		if have != tag {
-			kept = append(kept, have)
-		}
-	}
-	m.edit.tags = kept
-	if m.store == nil {
-		return
-	}
-	for bi := range m.store.Boards {
-		var picks [][2]int
-		cols := m.store.Boards[bi].Columns
-		for ci := range cols {
-			for ki := range cols[ci].Cards {
-				for _, have := range cols[ci].Cards[ki].Tags {
-					if have == tag {
-						picks = append(picks, [2]int{ci, ki})
-						break
-					}
-				}
-			}
-		}
-		if len(picks) == 0 {
-			continue
-		}
-		if err := m.store.ApplyCards(bi, picks, func(c *store.Card) {
-			next := make([]string, 0, len(c.Tags))
-			for _, have := range c.Tags {
-				if have != tag {
-					next = append(next, have)
-				}
-			}
-			c.Tags = next
-		}); err != nil {
-			m.notice = err.Error()
-		}
-	}
-}
-
-func (m *model) addTypedTag(value string) {
-	added := store.ParseTags(value)
-	if len(added) == 0 {
-		m.notice = "tag is empty"
-		return
-	}
-	if m.tagOn == nil {
-		m.tagOn = map[string]bool{}
-	}
-	for _, tag := range added {
-		at := -1
-		for i, have := range m.tagList {
-			if have == tag {
-				at = i
-				break
-			}
-		}
-		if at < 0 {
-			m.tagList = append(m.tagList, tag)
-			at = len(m.tagList) - 1
-		}
-		m.tagOn[tag] = true
-		m.tagSel = at
-	}
-}
-
-func (m *model) applyPickedTags() {
-	var tags []string
-	for _, tag := range m.tagList {
-		if m.tagOn[tag] {
-			tags = append(tags, tag)
-		}
-	}
-	fromCard := len(m.stack) >= 2 && m.stack[len(m.stack)-2] == layerCard
-	if fromCard {
-		m.edit.tags = tags
-		return
-	}
-	if err := m.store.ApplyCards(m.board, m.targets(), func(c *store.Card) {
-		c.Tags = append([]string(nil), tags...)
-	}); err != nil {
-		m.notice = err.Error()
-	}
-}
-
-func (m *model) tagDialog() string {
-	w := max(36, min(52, m.width-4))
-	textW := max(16, w-6)
-	ids := m.visibleTags()
-	room := len(ids)
-	if room < 1 {
-		room = 1
-	}
-	if maxRoom := m.height - 9; maxRoom > 0 && room > maxRoom {
-		room = maxRoom
-	}
-	pos := 0
-	for i, id := range ids {
-		if id == m.tagSel {
-			pos = i
-			break
-		}
-	}
-	off := 0
-	if pos >= room {
-		off = pos - room + 1
-	}
-	query := m.tagFilter
-	if query == "" {
-		query = ""
-	}
-	lines := []string{fit("/"+m.tagFilter, textW)}
-	if len(ids) == 0 {
-		msg := "no match"
-		if m.tagFilter != "" {
-			msg = "enter adds #" + m.tagFilter
-		}
-		lines = append(lines, mutedStyle.Render(msg))
-	}
-	for _, id := range ids[off:min(len(ids), off+room)] {
-		tag := m.tagList[id]
-		mark := "[ ] "
-		if m.tagOn[tag] {
-			mark = "[x] "
-		}
-		row := fit(mark+"#"+tag, textW)
-		if id == m.tagSel {
-			row = selStyle.Width(textW).Render(fit(mark+"#"+tag, textW))
-		}
-		lines = append(lines, row)
-	}
-	n := 0
-	for _, tag := range m.tagList {
-		if m.tagOn[tag] {
-			n++
-		}
-	}
-	hint := fmt.Sprintf("%d selected   type filters   space toggle   ctrl+d delete   enter save   esc cancel", n)
-	body := strings.Join(lines, "\n") + "\n" + hintLine(hint, textW)
-	return panelBox(" Tags ", body, w, room+6, true)
+	m.notice = ""
+	m.openInput(inputTags, " Tags ", strings.Join(cur, " "))
+	m.prompt.insert = true
+	m.prompt.col = len([]rune(m.prompt.value()))
 }
 
 func (m *model) openDue() {

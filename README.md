@@ -69,7 +69,7 @@ Press `?` inside the TUI for the full key list.
 | `A` | move the card into an Archive column (created if needed) instead of deleting it |
 | `v` | hide or show archive columns. The header keeps an archived count |
 | `!` | cycle priority: none, `!`, `!!` |
-| `t` | filter the config tag list by typing, Space toggles a match, Enter saves. Enter on no match adds the typed tag. `Ctrl-d` deletes the highlighted tag. `/#work` and `f` still find them |
+| `t` | type tags for the card, separated by spaces or commas. An empty field clears them. `/#work` and `f` still find them |
 | `T` | set a due date (`YYYY-MM-DD`) or snooze (`+3`). Overdue dates are red, today is gold |
 | `o` | open the first http(s) link in the title or description |
 | `X` | clear finished checklist items on the focused card |
@@ -105,13 +105,10 @@ ink 15
 
 Keys are `ink`, `paper`, `accent`, `warn`, `gold`, `tag`, `muted`, `pick`, `card`, and `archive`. A missing key keeps the linux-dex color.
 
-Settings live in `$XDG_CONFIG_HOME/kabmat/config`, which is `~/.config/kabmat/config` when that variable is unset. `KABMAT_CONFIG` points at a different file. If the file is missing, kabmat uses the built-in theme, tags, and keys. Creating it, or changing the theme inside the app, writes this shape:
+Settings live in `$XDG_CONFIG_HOME/kabmat/config`, which is `~/.config/kabmat/config` when that variable is unset. `KABMAT_CONFIG` points at a different file. If the file is missing, kabmat uses the built-in theme and keys. Creating it, or changing the theme inside the app, writes this shape:
 
 ```text
 theme linux-dex
-
-[tags]
-spike
 
 [keys.board]
 tags t
@@ -122,11 +119,11 @@ accent #89B4FA
 paper #313244
 ```
 
-`[tags]` is the whole tag list. Leave that section out to keep the defaults: `bug`, `feature`, `documentation`, `testing`, `chore`, `refactor`, `performance`, `ci/cd`, `devops`, `deployment`, `security`, and `research`. A line under `[keys.menu]` or `[keys.board]` replaces that action's keys. Digits stay count prefixes, so they cannot be bindings. Board text editing stays on the vim keys.
+A line under `[keys.menu]` or `[keys.board]` replaces that action's keys. Digits stay count prefixes, so they cannot be bindings. Board text editing stays on the vim keys.
 
 `c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `Esc` returns to the card. `q` saves and returns to the board. A subtask has its own summary and a tall description field.
 
-On the card screen, `!` cycles priority, `t` edits tags, and `T` edits the due date. Those values are saved with the card.
+On the card screen, `!` cycles priority, `t` sets tags, and `T` edits the due date. Those values are saved with the card.
 
 A card that has sat in the same column for 7 days with no priority is drawn in a dim border with its age (`14d`). Moving it to another column resets that clock. `!` cards take a gold border and `!!` cards take the warning border. Tags stay mint. A due date of today is gold, and an overdue date is the warning color, same as a column that is over its WIP limit. The focused column name uses the accent color.
 

@@ -14,7 +14,6 @@ type Config struct {
 	Path   string
 	Exists bool
 	Theme  string
-	Tags   []string
 	Themes map[string]map[string]string
 	Menu   map[string][]string
 	Board  map[string][]string
@@ -108,26 +107,9 @@ var colorKeys = map[string]bool{
 	"tag": true, "muted": true, "pick": true, "card": true, "archive": true,
 }
 
-// standardTags is the tag list used when the config file has no [tags] section.
-var standardTags = []string{
-	"bug",
-	"feature",
-	"documentation",
-	"testing",
-	"chore",
-	"refactor",
-	"performance",
-	"ci/cd",
-	"devops",
-	"deployment",
-	"security",
-	"research",
-}
-
 func Default() Config {
 	c := Config{
 		Theme:  "linux-dex",
-		Tags:   append([]string(nil), standardTags...),
 		Themes: map[string]map[string]string{},
 		Menu:   binds(menuDefaults),
 		Board:  binds(boardDefaults),
@@ -196,20 +178,15 @@ func Load() (Config, error) {
 
 func parse(s string, cfg Config) (Config, error) {
 	section := ""
-	sawTags := false
 	for i, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || isComment(line, section) {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section = strings.TrimSpace(line[1 : len(line)-1])
-			if section == "tags" && !sawTags {
-				cfg.Tags = nil
-				sawTags = true
-			}
 			switch {
-			case section == "tags" || section == "keys.menu" || section == "keys.board":
+			case section == "keys.menu" || section == "keys.board":
 			case strings.HasPrefix(section, "theme."):
 				name := strings.TrimPrefix(section, "theme.")
 				if name == "" || strings.Contains(name, ".") {
@@ -227,8 +204,6 @@ func parse(s string, cfg Config) (Config, error) {
 		switch {
 		case section == "":
 			err = parseTop(line, &cfg)
-		case section == "tags":
-			err = parseTag(line, &cfg)
 		case section == "keys.menu":
 			err = parseKeys(line, cfg.Menu, &cfg.menuKey)
 		case section == "keys.board":
@@ -246,17 +221,6 @@ func parse(s string, cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// isComment is a # line. Inside [tags], #review is a tag and "# review" stays a comment.
-func isComment(line, section string) bool {
-	if !strings.HasPrefix(line, "#") {
-		return false
-	}
-	if section == "tags" && len(line) > 1 && line[1] != ' ' && line[1] != '\t' {
-		return false
-	}
-	return true
-}
-
 func parseTop(line string, cfg *Config) error {
 	fields := strings.Fields(line)
 	if len(fields) == 2 && fields[0] == "theme" {
@@ -267,20 +231,6 @@ func parseTop(line string, cfg *Config) error {
 		return nil
 	}
 	return fmt.Errorf("unknown setting %q", line)
-}
-
-func parseTag(line string, cfg *Config) error {
-	tag := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(line)), "#")
-	if !ValidTag(tag) {
-		return fmt.Errorf("bad tag %q", line)
-	}
-	for _, have := range cfg.Tags {
-		if have == tag {
-			return nil
-		}
-	}
-	cfg.Tags = append(cfg.Tags, tag)
-	return nil
 }
 
 func parseKeys(line string, actions map[string][]string, index *map[string]string) error {
@@ -367,25 +317,6 @@ func ValidThemeName(name string) bool {
 	return true
 }
 
-// ValidTag is a short label: letters, digits, and / - _ . after the first character.
-func ValidTag(tag string) bool {
-	if tag == "" || len(tag) > 32 || strings.Contains(tag, "..") {
-		return false
-	}
-	for i, c := range tag {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case c == '/' || c == '-' || c == '_' || c == '.':
-			if i == 0 {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func validKey(key string) bool {
 	if key == "" || len(key) > 32 {
 		return false
@@ -461,11 +392,6 @@ func Save(c Config) error {
 			return fmt.Errorf("bad theme name %q", name)
 		}
 	}
-	for _, tag := range c.Tags {
-		if !ValidTag(tag) {
-			return fmt.Errorf("bad tag %q", tag)
-		}
-	}
 	if err := os.MkdirAll(filepath.Dir(c.Path), 0o700); err != nil {
 		return err
 	}
@@ -502,13 +428,8 @@ func (c Config) encode() string {
 	var b strings.Builder
 	b.WriteString("# kabmat config. A missing file uses these defaults.\n")
 	b.WriteString("# theme is linux-dex or catppuccin-mocha, or a [theme.name] block below.\n")
-	b.WriteString("# [tags] is the full tag list. [keys.menu] and [keys.board] replace a binding.\n")
+	b.WriteString("# [keys.menu] and [keys.board] replace a binding.\n")
 	fmt.Fprintf(&b, "\ntheme %s\n", c.Theme)
-	b.WriteString("\n[tags]\n")
-	for _, tag := range c.Tags {
-		b.WriteString(tag)
-		b.WriteByte('\n')
-	}
 	writeKeys(&b, "keys.menu", menuDefaults, c.Menu)
 	writeKeys(&b, "keys.board", boardDefaults, c.Board)
 	names := make([]string, 0, len(c.Themes))

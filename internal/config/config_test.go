@@ -25,7 +25,6 @@ func TestParseAndSave(t *testing.T) {
 	t.Setenv("KABMAT_CONFIG", path)
 	body := "" +
 		"theme catppuccin-mocha\n\n" +
-		"[tags]\n# a comment\n#spike\n\n" +
 		"[keys.board]\nnew-card x\n\n" +
 		"[theme.dusk]\naccent #89B4FA\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -35,7 +34,7 @@ func TestParseAndSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Exists || cfg.Theme != "catppuccin-mocha" || len(cfg.Tags) != 1 || cfg.Tags[0] != "spike" {
+	if !cfg.Exists || cfg.Theme != "catppuccin-mocha" {
 		t.Fatalf("load %+v", cfg)
 	}
 	if cfg.Action("board", "x") != "new-card" || cfg.Action("board", "c") != "" || cfg.Action("board", "t") != "tags" {
@@ -111,7 +110,6 @@ func TestSaveLoadThemeRoundtrip(t *testing.T) {
 	cfg.Themes = map[string]map[string]string{
 		"sunset": {"accent": "#FF7A59", "ink": "255"},
 	}
-	cfg.Tags = []string{"bug", "review"}
 	cfg.Menu["quit"] = []string{"Q"}
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
@@ -129,9 +127,6 @@ func TestSaveLoadThemeRoundtrip(t *testing.T) {
 	}
 	if pal := got.Themes["sunset"]; pal["accent"] != "#FF7A59" || pal["ink"] != "255" {
 		t.Fatalf("themes: %+v", pal)
-	}
-	if strings.Join(got.Tags, ",") != "bug,review" {
-		t.Fatalf("tags: %v", got.Tags)
 	}
 	if got.Label("menu", "quit") != "Q" {
 		t.Fatalf("keys: %v", got.Menu["quit"])
