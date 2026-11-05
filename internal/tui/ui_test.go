@@ -396,8 +396,11 @@ func TestSignals(t *testing.T) {
 	if tags := s.Boards[0].Columns[0].Cards[0].Tags; len(tags) != 1 || tags[0] != "work" || !strings.Contains(m.View(), "#work") {
 		t.Fatalf("tags %+v\n%s", tags, m.View())
 	}
-	press(m, "T", "i")
-	typeRunes(m, "2020-01-02")
+	press(m, "T")
+	if m.top() != layerCalendar {
+		t.Fatalf("due layer %d", m.top())
+	}
+	m.calYear, m.calMonth, m.calSel = 2020, 0, "2020-01-02"
 	press(m, "enter")
 	if s.Boards[0].Columns[0].Cards[0].Due != "2020-01-02" || !strings.Contains(m.View(), "01-02") {
 		t.Fatalf("due %q\n%s", s.Boards[0].Columns[0].Cards[0].Due, m.View())
@@ -880,6 +883,26 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyTab}
 	case "ctrl+p":
 		return tea.KeyMsg{Type: tea.KeyCtrlP}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "home":
+		return tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		return tea.KeyMsg{Type: tea.KeyEnd}
+	case "ctrl+home":
+		return tea.KeyMsg{Type: tea.KeyCtrlHome}
+	case "ctrl+end":
+		return tea.KeyMsg{Type: tea.KeyCtrlEnd}
+	case "ctrl+right":
+		return tea.KeyMsg{Type: tea.KeyCtrlRight}
+	case "ctrl+left":
+		return tea.KeyMsg{Type: tea.KeyCtrlLeft}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -969,5 +992,311 @@ func TestRenameColumnRejectsBraces(t *testing.T) {
 	}
 	if s.Boards[0].Columns[0].Title != "Todo" {
 		t.Fatalf("title changed: %q", s.Boards[0].Columns[0].Title)
+	}
+}
+
+func TestFieldVimArrowsAndWordMotions(t *testing.T) {
+	f := newField("hello world", false)
+	f.insert = true
+	f.handle("right", nil)
+	if f.col != 1 {
+		t.Fatalf("insert right should move one character, col=%d", f.col)
+	}
+	f.handle("ctrl+right", nil)
+	if f.col != 6 {
+		t.Fatalf("insert ctrl+right should jump to the next word, col=%d", f.col)
+	}
+	f.handle("esc", nil)
+	if f.insert {
+		t.Fatal("esc should leave insert mode")
+	}
+	f.handle("b", nil)
+	if f.col != 0 {
+		t.Fatalf("normal b should jump to the previous word, col=%d", f.col)
+	}
+	f.handle("e", nil)
+	if f.col != 5 {
+		t.Fatalf("normal e should jump to the end of the word, col=%d", f.col)
+	}
+	f.handle("w", nil)
+	if f.col != 6 {
+		t.Fatalf("normal w should jump to the next word, col=%d", f.col)
+	}
+	f.handle("W", nil)
+	if f.col != 11 {
+		t.Fatalf("normal W should jump past the word, col=%d", f.col)
+	}
+	f.handle("B", nil)
+	if f.col != 6 {
+		t.Fatalf("normal B should jump to the previous word, col=%d", f.col)
+	}
+	f.handle("g", nil)
+	f.handle("e", nil)
+	if f.col != 5 {
+		t.Fatalf("normal ge should jump to the end of the previous word, col=%d", f.col)
+	}
+	f.handle("esc", nil)
+}
+
+func TestFieldVimUndoRedoAndDelete(t *testing.T) {
+	f := newField("hello world", false)
+	f.insert = true
+	f.col = len([]rune(f.value()))
+	f.handle("ctrl+w", nil)
+	if f.value() != "hello " {
+		t.Fatalf("ctrl+w %q", f.value())
+	}
+	f.handle("backspace", nil)
+	if f.value() != "hello" {
+		t.Fatalf("backspace %q", f.value())
+	}
+	f = newField("hello world", false)
+	f.insert = true
+	f.col = len([]rune(f.value()))
+	f.handle("alt+backspace", nil)
+	if f.value() != "hello " {
+		t.Fatalf("alt %q", f.value())
+	}
+
+	f = newField("hello world", false)
+	f.insert = true
+	f.col = 0
+	f.handle("esc", nil)
+	f.handle("x", nil)
+	if f.value() != "ello world" {
+		t.Fatalf("normal x should delete the character, %q", f.value())
+	}
+	f.handle("u", nil)
+	if f.value() != "hello world" {
+		t.Fatalf("normal u should undo, %q", f.value())
+	}
+	f.handle("ctrl+r", nil)
+	if f.value() != "ello world" {
+		t.Fatalf("ctrl+r should redo, %q", f.value())
+	}
+	sub, cancel := f.handle("q", nil)
+	if !cancel || sub {
+		t.Fatalf("normal q should cancel, got %v %v", sub, cancel)
+	}
+}
+
+func TestFieldVimOpenLine(t *testing.T) {
+	f := newField("hello world", false)
+	f.insert = true
+	f.handle("esc", nil)
+	f.handle("o", nil)
+	if f.value() != "hello world\n" || f.row != 1 || f.col != 0 {
+		t.Fatalf("o split: %q row=%d col=%d", f.value(), f.row, f.col)
+	}
+	f = newField("hello world", false)
+	f.insert = true
+	f.handle("esc", nil)
+	f.handle("O", nil)
+	if f.value() != "\nhello world" || f.row != 0 || f.col != 0 {
+		t.Fatalf("O split: %q row=%d col=%d", f.value(), f.row, f.col)
+	}
+}
+
+func TestCardFieldVimArrows(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "e")
+	if m.top() != layerCard {
+		t.Fatalf("card layer %d", m.top())
+	}
+	press(m, "i")
+	if !m.edit.content.insert {
+		t.Fatal("content should be in insert mode")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.edit.content.col != 1 {
+		t.Fatalf("insert arrow should move the cursor, col=%d", m.edit.content.col)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight})
+	if m.edit.content.col != 4 {
+		t.Fatalf("insert ctrl+arrow should jump a word, col=%d", m.edit.content.col)
+	}
+	press(m, "esc")
+	if m.edit.content.insert {
+		t.Fatal("esc should leave insert mode")
+	}
+	press(m, "b")
+	if m.edit.content.col != 0 {
+		t.Fatalf("normal b should jump to the word start, col=%d", m.edit.content.col)
+	}
+	press(m, "i")
+	if !m.edit.content.insert {
+		t.Fatal("content should be in insert mode again")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.edit.content.value() != "nship" {
+		t.Fatalf("typing after jump should insert, %q", m.edit.content.value())
+	}
+}
+
+func TestDueCalendarPick(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "T")
+	if m.top() != layerCalendar {
+		t.Fatalf("due layer %d", m.top())
+	}
+	m.calYear, m.calMonth, m.calSel = 2020, 0, "2020-01-02"
+	if !strings.Contains(m.dialog(), "January 2020") || !strings.Contains(m.dialog(), "2020-01-02") {
+		t.Fatalf("calendar dialog\n%s", m.dialog())
+	}
+	press(m, "enter")
+	if m.top() != layerNone {
+		t.Fatalf("calendar should close on pick, layer %d", m.top())
+	}
+	if s.Boards[0].Columns[0].Cards[0].Due != "2020-01-02" {
+		t.Fatalf("due %q", s.Boards[0].Columns[0].Cards[0].Due)
+	}
+}
+
+func TestDueCalendarFromCardEdit(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "e")
+	if m.top() != layerCard {
+		t.Fatalf("card layer %d", m.top())
+	}
+	press(m, "T")
+	if m.top() != layerCalendar {
+		t.Fatalf("due layer %d", m.top())
+	}
+	m.calYear, m.calMonth, m.calSel = 2020, 0, "2020-01-02"
+	press(m, "enter")
+	if m.top() != layerCard {
+		t.Fatalf("calendar should return to the card, layer %d", m.top())
+	}
+	if m.edit.due != "2020-01-02" {
+		t.Fatalf("edit due %q", m.edit.due)
+	}
+	press(m, "enter")
+	if m.edit.isNew || m.top() != layerNone {
+		t.Fatalf("save card layer %d", m.top())
+	}
+	if s.Boards[0].Columns[0].Cards[0].Due != "2020-01-02" {
+		t.Fatalf("saved due %q", s.Boards[0].Columns[0].Cards[0].Due)
+	}
+}
+
+func TestDueCalendarNavigation(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "T")
+	if m.top() != layerCalendar {
+		t.Fatalf("due layer %d", m.top())
+	}
+	m.calYear, m.calMonth, m.calSel = 2020, 0, "2020-01-02"
+	press(m, "j")
+	if m.calSel != "2020-01-03" {
+		t.Fatalf("j moved to %q", m.calSel)
+	}
+	press(m, "k")
+	if m.calSel != "2020-01-02" {
+		t.Fatalf("k moved to %q", m.calSel)
+	}
+	press(m, "h")
+	if m.calSel != "2020-01-01" {
+		t.Fatalf("h moved to %q", m.calSel)
+	}
+	press(m, "l")
+	if m.calSel != "2020-01-02" {
+		t.Fatalf("l moved to %q", m.calSel)
+	}
+	press(m, "down")
+	if m.calSel != "2020-01-03" {
+		t.Fatalf("down moved to %q", m.calSel)
+	}
+	press(m, "up")
+	if m.calSel != "2020-01-02" {
+		t.Fatalf("up moved to %q", m.calSel)
+	}
+	press(m, "0")
+	if m.calSel != "2020-01-01" {
+		t.Fatalf("0 moved to %q", m.calSel)
+	}
+	press(m, "$")
+	if m.calSel != "2020-01-31" {
+		t.Fatalf("$ moved to %q", m.calSel)
+	}
+	press(m, "g")
+	press(m, "g")
+	if m.calSel != "2020-01-01" {
+		t.Fatalf("gg moved to %q", m.calSel)
+	}
+	press(m, "G")
+	if m.calSel != "2020-01-31" {
+		t.Fatalf("G moved to %q", m.calSel)
+	}
+	press(m, "+", "3")
+	if m.calSel != "2020-02-03" {
+		t.Fatalf("snooze moved to %q", m.calSel)
+	}
+	press(m, "d")
+	if m.calSel != "" {
+		t.Fatalf("d should clear the picked day, got %q", m.calSel)
+	}
+	press(m, "esc")
+	if m.top() != layerNone {
+		t.Fatalf("esc should close the calendar, layer %d", m.top())
 	}
 }

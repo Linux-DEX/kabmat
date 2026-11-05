@@ -37,6 +37,7 @@ const (
 	layerSubtask
 	layerMove
 	layerTheme
+	layerCalendar
 )
 
 type inputKind int
@@ -50,7 +51,6 @@ const (
 	inputEditItem
 	inputWIP
 	inputTags
-	inputDue
 	inputNewTheme
 	inputThemeColor
 )
@@ -141,6 +141,11 @@ type model struct {
 	schemeSel  int
 	colorSel   int
 	schemeEdit bool
+
+	calYear   int
+	calMonth  int
+	calSel    string
+	calMotion byte
 }
 
 func Run(s *store.Store, open string) error {
@@ -160,6 +165,9 @@ func newModel(s *store.Store, open string) (*model, error) {
 		returnToMenu: true,
 		foldSubs:     true,
 		themeName:    "linux-dex",
+		calYear:      time.Now().Year(),
+		calMonth:     int(time.Now().Month()) - 1,
+		calSel:       time.Now().Format("2006-01-02"),
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -287,6 +295,8 @@ func (m *model) onKey(key string, runes []rune) {
 		m.moveKey(key)
 	case layerTheme:
 		m.themeKey(key)
+	case layerCalendar:
+		m.calKey(key, runes)
 	default:
 		m.normalKey(key)
 	}
@@ -580,19 +590,6 @@ func (m *model) inputKey(key string, runes []rune) {
 		} else {
 			err = m.store.ApplyCards(m.board, m.targets(), func(c *store.Card) {
 				c.Tags = append([]string(nil), tags...)
-			})
-		}
-	case inputDue:
-		var due string
-		due, err = parseDue(value)
-		if err != nil {
-			break
-		}
-		if fromCard {
-			m.edit.due = due
-		} else {
-			err = m.store.ApplyCards(m.board, m.targets(), func(c *store.Card) {
-				c.Due = due
 			})
 		}
 	case inputNewTheme:
@@ -1729,6 +1726,8 @@ func (m *model) dialog() string {
 		return m.moveDialog()
 	case layerTheme:
 		return m.themeDialog()
+	case layerCalendar:
+		return m.calDialog()
 	default:
 		return ""
 	}
@@ -1799,6 +1798,109 @@ func (m *model) columnDialog() string {
 	body := title + "\n\n" + m.prompt.render(textW) + "\n\n" +
 		modeLine(m.prompt.insert, "i insert    enter save    esc cancel", textW)
 	return boxOnStyle.Width(inner).Render(body)
+}
+
+func (m *model) calDialog() string {
+	inner := max(30, min(56, m.width-4))
+	textW := max(10, inner-2)
+	var lines []string
+	lines = append(lines, m.promptTitle)
+	lines = append(lines, "")
+	lines = append(lines, fit(calMonthName(m.calYear, int(m.calMonth)+1), textW))
+	lines = append(lines, "")
+	lines = append(lines, m.calGrid(textW))
+	lines = append(lines, "")
+	lines = append(lines, hintLine("j/k move   gg/G first/last   +N snooze   enter pick", textW))
+	lines = append(lines, hintLine("esc close    d clear", textW))
+	lines = append(lines, "due "+m.calSel)
+	for len(lines) < 12 {
+		lines = append(lines, "")
+	}
+	return boxOnStyle.Width(inner).Render(strings.Join(lines, "\n"))
+}
+
+func calMonthName(year, month int) string {
+	return time.Month(month).String() + " " + fmt.Sprint(year)
+}
+
+func weekdayShort(i int) string {
+	switch i {
+	case 0:
+		return "Su"
+	case 1:
+		return "Mo"
+	case 2:
+		return "Tu"
+	case 3:
+		return "We"
+	case 4:
+		return "Th"
+	case 5:
+		return "Fr"
+	case 6:
+		return "Sa"
+	}
+	return ""
+}
+
+func (m *model) calGrid(textW int) string {
+	first := int(time.Date(m.calYear, time.Month(m.calMonth+1), 1, 0, 0, 0, 0, time.UTC).Weekday())
+	days := time.Date(m.calYear, time.Month(m.calMonth+1), 0, 0, 0, 0, 0, time.UTC).Day()
+	today := time.Now().Format("2006-01-02")
+	cellW := max(2, textW/7)
+	padCell := func(s string) string {
+		if lipgloss.Width(s) >= cellW {
+			return s
+		}
+		return strings.Repeat(" ", cellW-lipgloss.Width(s)) + s
+	}
+	var rows []string
+	head := make([]string, 7)
+	for i := 0; i < 7; i++ {
+		head[i] = padCell(weekdayShort(i))
+	}
+	rows = append(rows, strings.Join(head, ""))
+	needed := (first + days - 1) / 7
+	needed++
+	if needed < 6 {
+		needed = 6
+	}
+	r := 0
+	for r < needed {
+		cells := make([]string, 7)
+		for c := 0; c < 7; c++ {
+			day := r*7 + c - first + 1
+			if day < 1 || day > days {
+				cells[c] = strings.Repeat(" ", cellW)
+				continue
+			}
+			ds := fmt.Sprintf("%2d", day)
+			date := fmt.Sprintf("%04d-%02d-%02d", m.calYear, int(m.calMonth)+1, day)
+			switch {
+			case date == m.calSel:
+				cells[c] = selStyle.Render(ds)
+			case date == today:
+				cells[c] = dueHotStyle.Render(ds)
+			default:
+				cells[c] = ds
+			}
+			cells[c] = padCell(cells[c])
+		}
+		rows = append(rows, padRow(strings.Join(cells, ""), textW))
+		r++
+	}
+	return strings.Join(rows, "\n")
+}
+
+// padRow centers a row inside the content width so the calendar table is not
+// stuck to the left side of the dialog.
+func padRow(s string, n int) string {
+	w := lipgloss.Width(s)
+	if w >= n {
+		return s
+	}
+	left := (n - w) / 2
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", n-w-left)
 }
 
 func (m *model) scrollShown(ci, n, selPos, room int, count func(int) int) int {
@@ -2331,9 +2433,14 @@ var helpLines = []string{
 	"Input, normal",
 	"  h/l                   move",
 	"  0/$                   line start/end",
+	"  w/W/b/B/e/E            word motion",
+	"  ge/gE                 end of previous word",
 	"  i/a/I/A               insert",
 	"  S                     clear line",
 	"  d                     delete line",
+	"  x/X                   delete character",
+	"  o/O                   open line below/above",
+	"  u/ctrl+r              undo / redo",
 	"  enter                 save",
 	"  esc/q                 cancel",
 	"",
@@ -2343,6 +2450,11 @@ var helpLines = []string{
 	"  backspace             delete character",
 	"  ctrl+backspace        delete the word before the cursor",
 	"  alt+backspace         same (option+backspace on macOS)",
+	"  left/right             move character",
+	"  up/down                move line",
+	"  home/end               jump line start/end",
+	"  ctrl+home/end          jump line start/end",
+	"  ctrl+left/right        move word",
 	"",
 	"Confirm",
 	"  y/enter               yes",
@@ -2365,7 +2477,7 @@ var helpLines = []string{
 	"  v                     hide or show archive columns",
 	"  !                     cycle priority: none, !, !!",
 	"  t                     set tags, separated by spaces or commas",
-	"  T                     due date YYYY-MM-DD, or +days to snooze",
+	"  T                     due date calendar, pick a day or +days to snooze",
 	"  o                     open the first http(s) link on the card",
 	"  X                     clear finished checklist items",
 	"  K/J, shift+up/down    move focused card up/down",
@@ -2404,6 +2516,16 @@ var helpLines = []string{
 	"  q                     return to the board",
 	"  c                     checklist",
 	"  s                     subtasks",
+	"",
+	"Due date",
+	"  j/k/h/l               move day",
+	"  gg                    first day of the month",
+	"  G                    last day of the month",
+	"  $                     last day of the month",
+	"  +N                    snooze N days",
+	"  d                     clear the due date",
+	"  enter                 pick the date",
+	"  esc/q                 cancel",
 	"",
 	"Subtasks",
 	"  j/k                   select",
@@ -2910,7 +3032,116 @@ func (m *model) openDue() {
 			cur = m.curBoard().Columns[t[0][0]].Cards[t[0][1]].Due
 		}
 	}
-	m.openInput(inputDue, " Due (YYYY-MM-DD or +days) ", cur)
+	m.openCalendar(cur)
+}
+
+// openCalendar pushes the due date picker on top of the current layer and seeds
+// the cursor with the current due date, or today when the card has none.
+func (m *model) openCalendar(cur string) {
+	year, month, day := time.Now().Year(), int(time.Now().Month()), time.Now().Day()
+	if t, err := time.Parse("2006-01-02", strings.TrimSpace(cur)); err == nil {
+		year, month, day = t.Year(), int(t.Month()), t.Day()
+	}
+	m.calYear = year
+	m.calMonth = month - 1
+	m.calSel = time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+	m.calMotion = 0
+	m.promptTitle = " Due date "
+	m.push(layerCalendar)
+}
+
+// calKey handles the due date picker: vim motions over the day list, picking and snooze.
+func (m *model) calKey(key string, runes []rune) {
+	motion := m.calMotion
+	m.calMotion = 0
+	switch key {
+	case "esc", "q":
+		m.pop()
+		return
+	case "enter":
+		m.commitDue()
+		return
+	case "g":
+		if motion == 'g' {
+			m.calSel = firstCalDay(m.calYear, m.calMonth)
+		} else {
+			m.calMotion = 'g'
+		}
+		return
+	case "G":
+		m.calSel = lastCalDay(m.calYear, m.calMonth)
+		return
+	case "j", "k", "h", "l", "0", "$", "up", "down", "left", "right":
+		switch key {
+		case "j", "l", "down":
+			m.calStep(1)
+		case "k", "h", "up", "left":
+			m.calStep(-1)
+		case "0":
+			m.calSel = firstCalDay(m.calYear, m.calMonth)
+		case "$":
+			m.calSel = lastCalDay(m.calYear, m.calMonth)
+		}
+		return
+	case "+":
+		if motion != '+' {
+			m.calMotion = '+'
+		}
+		return
+	case "d":
+		m.calSel = ""
+		return
+	}
+	if motion == '+' && len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
+		m.calMotion = 0
+		m.setSnooze(int(key[0] - '0'))
+	}
+}
+
+// calStep moves the picked day by dir days, following the cursor into the next month.
+func (m *model) calStep(dir int) {
+	t, err := time.Parse("2006-01-02", m.calSel)
+	if err != nil {
+		t = time.Date(m.calYear, time.Month(m.calMonth+1), 1, 0, 0, 0, 0, time.UTC)
+	}
+	t = t.AddDate(0, 0, dir)
+	m.calSel = t.Format("2006-01-02")
+	m.calYear, m.calMonth = t.Year(), int(t.Month())-1
+}
+
+// setSnooze moves the picked day forward by n days.
+func (m *model) setSnooze(n int) {
+	t := time.Now()
+	if m.calSel != "" {
+		if picked, err := time.Parse("2006-01-02", m.calSel); err == nil {
+			t = picked
+		}
+	}
+	t = t.AddDate(0, 0, n)
+	m.calSel = t.Format("2006-01-02")
+	m.calYear, m.calMonth = t.Year(), int(t.Month())-1
+}
+
+// commitDue applies the picked date and closes the calendar.
+func (m *model) commitDue() {
+	fromCard := len(m.stack) >= 2 && m.stack[len(m.stack)-2] == layerCard
+	m.pop()
+	if fromCard {
+		m.edit.due = m.calSel
+		return
+	}
+	if err := m.store.ApplyCards(m.board, m.targets(), func(c *store.Card) { c.Due = m.calSel }); err != nil {
+		m.notice = err.Error()
+	}
+}
+
+func firstCalDay(year, month int) string {
+	return time.Date(year, time.Month(month+1), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+}
+
+func lastCalDay(year, month int) string {
+	// month is 0-based; day 0 of the following month is the last day of this one.
+	return time.Date(year, time.Month(month+2), 0, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 }
 
 func (m *model) openLink() {

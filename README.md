@@ -70,7 +70,7 @@ Press `?` inside the TUI for the full key list.
 | `v` | hide or show archive columns. The header keeps an archived count |
 | `!` | cycle priority: none, `!`, `!!` |
 | `t` | type tags for the card, separated by spaces or commas. An empty field clears them. `/#work` and `f` still find them |
-| `T` | set a due date (`YYYY-MM-DD`) or snooze (`+3`). Overdue dates are red, today is gold |
+| `T` | open the due date calendar, pick a day, or snooze (`+3`). Overdue dates are red, today is gold |
 | `o` | open the first http(s) link in the title or description |
 | `X` | clear finished checklist items on the focused card |
 | `K` / `J` | move the focused card up / down |
@@ -91,6 +91,8 @@ Press `?` inside the TUI for the full key list.
 ### Editing
 
 Text fields start in normal mode. `i` inserts, `Esc` leaves insert mode, `Enter` saves, `Esc` or `q` cancels. `Ctrl-Backspace` deletes the word before the cursor. Terminals report that key differently: macOS Terminal and Linux xterm send `Ctrl-h`, Kitty and xterm modifyOtherKeys send a CSI sequence, and Option-Backspace on macOS (Alt-Backspace on Linux) is the same action.
+
+Arrows work in both modes. In insert mode the arrow keys move the cursor character by character, `Ctrl-Left` / `Ctrl-Right` (or `Alt-Left` / `Alt-Right`) jump word by word, and `Home` / `End` (or `Ctrl-Home` / `Ctrl-End`) jump to the line ends. In normal mode the arrow keys and `h` / `l` / `j` / `k` move around, `0` / `$` jump to the line ends, and the word motions `w` / `W` / `b` / `B` / `e` / `E` (plus `ge` / `gE` for the end of the previous word) move between words. `x` / `X` delete the character under / before the cursor, `o` / `O` open a line below / above, and `u` / `Ctrl-r` undo / redo the field text. Multi-line fields (like descriptions) accept `j` / `k` and `g` / `G` for line movement.
 
 Dialogs sit on top of the board. `Esc` closes the front one. Card info fills most of the screen. `Tab` switches between the summary and the description. Long description lines wrap. `Enter` saves and returns to the board. `q` leaves without saving. A `NORMAL` or `INSERT` badge sits on the card, subtask, and column prompts. The new-column and rename-column prompts are a single box around the name. Keys in the footer and in dialogs are drawn in the accent color.
 
@@ -123,7 +125,7 @@ A line under `[keys.menu]` or `[keys.board]` replaces that action's keys. Digits
 
 `c` opens the checklist and `s` opens subtasks once the summary is set. Both lists use most of the screen. `j`/`k` select, `g`/`G` jump to the ends, `J`/`K` reorder, `Space` toggles done, `c` adds, `e` edits, and `d` deletes. `Esc` returns to the card. `q` saves and returns to the board. A subtask has its own summary and a tall description field.
 
-On the card screen, `!` cycles priority, `t` sets tags, and `T` edits the due date. Those values are saved with the card.
+On the card screen, `!` cycles priority, `t` sets tags, and `T` opens the due date calendar. Pick a day with the vim motions (`j`/`k`/`h`/`l` move, `gg`/`G` jump to the month ends, `0`/`$` jump to the day ends, `+N` snoozes), then `enter` picks and saves. Those values are saved with the card.
 
 A card that has sat in the same column for 7 days with no priority is drawn in a dim border with its age (`14d`). Moving it to another column resets that clock. `!` cards take a gold border and `!!` cards take the warning border. Tags stay mint. A due date of today is gold, and an overdue date is the warning color, same as a column that is over its WIP limit. The focused column name uses the accent color.
 
