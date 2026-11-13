@@ -599,9 +599,9 @@ func (m *model) inputKey(key string, runes []rune) {
 			})
 		}
 	case inputNewTheme:
-		m.addScheme(value)
+		err = m.addScheme(value)
 	case inputThemeColor:
-		m.setSchemeColor(value)
+		err = m.setSchemeColor(value)
 	}
 	if err != nil {
 		m.notice = err.Error()

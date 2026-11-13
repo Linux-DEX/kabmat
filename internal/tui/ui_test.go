@@ -755,6 +755,48 @@ func TestUserTheme(t *testing.T) {
 	}
 }
 
+// An invalid theme name or color must leave its error visible in the theme
+// dialog instead of being wiped when the input closes.
+func TestThemeInputErrorsStayVisible(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 30
+
+	// Bad theme name: the notice must survive the input closing.
+	press(m, "ctrl+t", "c", "i")
+	typeRunes(m, "bad name")
+	press(m, "enter")
+	if m.top() != layerTheme {
+		t.Fatalf("layer %d", m.top())
+	}
+	if m.notice == "" {
+		t.Fatalf("bad theme name wiped the notice, schemes %+v", m.schemes)
+	}
+	if !strings.Contains(m.notice, "theme name") {
+		t.Fatalf("notice %q", m.notice)
+	}
+
+	// Bad color value on a user theme: the notice must survive too.
+	press(m, "c", "i")
+	typeRunes(m, "mine")
+	press(m, "enter", "e", "enter", "S")
+	typeRunes(m, "zzz")
+	press(m, "enter")
+	if m.top() != layerTheme || m.schemeEdit != true {
+		t.Fatalf("layer %d edit %v", m.top(), m.schemeEdit)
+	}
+	if !strings.Contains(m.notice, "color") {
+		t.Fatalf("bad color wiped the notice: %q", m.notice)
+	}
+}
+
 func TestConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")

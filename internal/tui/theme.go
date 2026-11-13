@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -444,17 +445,15 @@ func (m *model) themeColorKey(key string) {
 	}
 }
 
-func (m *model) addScheme(name string) {
+func (m *model) addScheme(name string) error {
 	name = strings.TrimSpace(name)
 	if !config.ValidThemeName(name) {
-		m.notice = "theme name must be letters, digits, - or _"
-		return
+		return errors.New("theme name must be letters, digits, - or _")
 	}
 	for i := range m.schemes {
 		if m.schemes[i].name == name {
 			m.schemeSel = i
-			m.notice = "theme already exists"
-			return
+			return errors.New("theme already exists")
 		}
 	}
 	m.schemes = append(m.schemes, scheme{
@@ -465,27 +464,25 @@ func (m *model) addScheme(name string) {
 	m.schemeSel = len(m.schemes) - 1
 	m.previewScheme()
 	if err := m.saveConfig(); err != nil {
-		m.notice = err.Error()
+		return err
 	}
+	return nil
 }
 
-func (m *model) setSchemeColor(val string) {
+func (m *model) setSchemeColor(val string) error {
 	if m.schemeSel < 0 || m.schemeSel >= len(m.schemes) || m.colorSel < 0 || m.colorSel >= len(colorSlots) {
-		return
+		return nil
 	}
 	val = strings.TrimSpace(val)
 	if !validColor(val) {
-		m.notice = "color is 0-255 or #hex"
-		return
+		return errors.New("color is 0-255 or #hex")
 	}
 	m.schemes[m.schemeSel].user = true
 	m.schemes[m.schemeSel].pal.set(colorSlots[m.colorSel].key, val)
 	if m.schemes[m.schemeSel].name == m.themeName {
 		applyPalette(m.schemes[m.schemeSel].pal)
 	}
-	if err := m.saveConfig(); err != nil {
-		m.notice = err.Error()
-	}
+	return m.saveConfig()
 }
 
 func (m *model) deleteScheme() {
