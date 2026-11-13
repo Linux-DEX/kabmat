@@ -392,6 +392,73 @@ func TestMoveClearAndResume(t *testing.T) {
 	}
 }
 
+// A store mutation must not write the file on the next unrelated keypress;
+// the write is debounced and lands when the flush tick arrives.
+func TestFlushDebounced(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	if err := s.AddCard(0, 0, store.Card{Content: "debounced"}); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated navigation keypress must not flush.
+	press(m, "k")
+	b, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "debounced") {
+		t.Fatalf("unrelated keypress flushed the file: %q", b)
+	}
+	// The scheduled tick flushes.
+	m2, _ := m.Update(flushTickMsg{})
+	if b, err := os.ReadFile(s.Path); err != nil || !strings.Contains(string(b), "debounced") {
+		t.Fatalf("tick did not flush: %q %v", b, err)
+	}
+	_ = m2
+	// A second tick with a clean store must not re-schedule work (cmd nil).
+	if _, cmd := m.Update(flushTickMsg{}); cmd != nil {
+		t.Fatalf("clean store scheduled another flush: %v", cmd)
+	}
+}
+
+// Quitting must still write pending changes synchronously.
+func TestQuitFlushesPendingChanges(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	if err := s.AddCard(0, 0, store.Card{Content: "bye"}); err != nil {
+		t.Fatal(err)
+	}
+	press(m, "q")
+	b, err := os.ReadFile(s.Path)
+	if err != nil || !strings.Contains(string(b), "bye") {
+		t.Fatalf("quit did not flush: %q %v", b, err)
+	}
+}
+
 func TestSignals(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))

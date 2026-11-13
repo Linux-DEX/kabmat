@@ -57,6 +57,13 @@ const (
 
 const staleDays = 7
 
+// flushTickMsg is the debounced write tick: the store writes when it lands.
+type flushTickMsg struct{}
+
+// flushDelay is how long edits may sit dirty before the file is written.
+// A burst of edits costs one write; quitting always flushes synchronously.
+const flushDelay = 300 * time.Millisecond
+
 type confirmKind int
 
 const (
@@ -98,6 +105,7 @@ type model struct {
 	returnToMenu bool
 	quitting     bool
 	notice       string
+	flushWait    bool // a debounced flush tick is on its way
 
 	menuSel    int
 	menuScroll int
@@ -222,6 +230,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Height > 0 {
 			m.height = msg.Height
 		}
+	case flushTickMsg:
+		m.flushWait = false
+		if err := m.store.Flush(); err != nil {
+			// Keep the change dirty; settle schedules a retry tick.
+			m.notice = err.Error()
+		}
 	case tea.KeyMsg:
 		m.onKey(msg.String(), msg.Runes)
 	default:
@@ -229,22 +243,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.onKey("ctrl+backspace", nil)
 		}
 	}
-	if err := m.store.Flush(); err != nil {
-		m.notice = err.Error()
-		if m.quitting {
-			// A failed write must not trap the user: exit anyway. The
-			// previous file is intact and the undo state is lost with
-			// the process, which is the user's explicit choice.
-			m.remember()
-			return m, tea.Quit
-		}
-		return m, nil
-	}
+	return m, m.settle()
+}
+
+// settle flushes pending changes and schedules the next debounced write.
+// Data is written when the tick lands, so a burst of edits costs one write;
+// quitting always flushes synchronously.
+func (m *model) settle() tea.Cmd {
 	if m.quitting {
+		if err := m.store.Flush(); err != nil {
+			m.notice = err.Error()
+		}
 		m.remember()
-		return m, tea.Quit
+		return tea.Quit
 	}
-	return m, nil
+	if !m.store.Dirty() || m.flushWait {
+		return nil
+	}
+	m.flushWait = true
+	return tea.Tick(flushDelay, func(time.Time) tea.Msg { return flushTickMsg{} })
 }
 
 func (m *model) View() string {

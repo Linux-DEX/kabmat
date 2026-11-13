@@ -1042,6 +1042,9 @@ func (s *Store) Flush() error {
 	return nil
 }
 
+// Dirty reports whether unflushed changes exist.
+func (s *Store) Dirty() bool { return s.dirty }
+
 type Place struct {
 	Board string
 	Col   int
