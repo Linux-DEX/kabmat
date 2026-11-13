@@ -21,6 +21,42 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// A failing Flush must not trap the user: ctrl+c still quits.
+func TestQuitSurvivesWriteError(t *testing.T) {
+	dir := t.TempDir()
+	defer os.Chmod(dir, 0o700)
+	if err := os.WriteFile(filepath.Join(dir, "data"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The directory is now unwritable, so every Flush attempt fails.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	if err := s.CreateBoard("X"); err != nil {
+		t.Fatal(err)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m2 := updated.(*model)
+	if !m2.quitting {
+		t.Fatalf("write error blocked quitting (notice %q)", m2.notice)
+	}
+	if cmd == nil {
+		t.Fatal("no quit command returned")
+	}
+	if msg := cmd(); msg != tea.Quit() {
+		t.Fatalf("expected quit command, got %v", msg)
+	}
+}
+
 func TestEscHidesChecklist(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))

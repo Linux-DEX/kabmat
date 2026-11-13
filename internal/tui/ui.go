@@ -230,8 +230,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if err := m.store.Flush(); err != nil {
-		m.quitting = false
 		m.notice = err.Error()
+		if m.quitting {
+			// A failed write must not trap the user: exit anyway. The
+			// previous file is intact and the undo state is lost with
+			// the process, which is the user's explicit choice.
+			m.remember()
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 	if m.quitting {
