@@ -904,6 +904,29 @@ func TestTagPrompt(t *testing.T) {
 	}
 }
 
+// A terminal resize redraws the whole frame, so a notice from before the
+// resize must not linger on top of it.
+func TestResizeClearsNotice(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	m.notice = "old warning"
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if m.notice != "" {
+		t.Fatalf("resize left a stale notice: %q", m.notice)
+	}
+}
+
 func TestUserTheme(t *testing.T) {
 	defer applyPalette(defaultPalette())
 	t.Setenv("KABMAT_CONFIG", filepath.Join(t.TempDir(), "config"))

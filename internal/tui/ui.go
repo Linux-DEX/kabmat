@@ -237,6 +237,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Height > 0 {
 			m.height = msg.Height
 		}
+		// The resize repaints the frame; a notice from the old layout
+		// would sit on top of the new one.
+		m.notice = ""
 	case flushTickMsg:
 		m.flushWait = false
 		if err := m.store.Flush(); err != nil {
