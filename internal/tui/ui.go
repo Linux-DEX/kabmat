@@ -106,6 +106,7 @@ type model struct {
 	quitting     bool
 	notice       string
 	flushWait    bool // a debounced flush tick is on its way
+	today        string // the clock read for this frame's due/age styling
 
 	menuSel    int
 	menuScroll int
@@ -176,6 +177,7 @@ func newModel(s *store.Store, open string) (*model, error) {
 		calYear:      time.Now().Year(),
 		calMonth:     int(time.Now().Month()) - 1,
 		calSel:       time.Now().Format("2006-01-02"),
+		today:        time.Now().Format("2006-01-02"),
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -261,6 +263,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // mutates: menu window, visible column, card selection and the filter anchor
 // are all settled here. Layout-dependent card scroll stays with the renderer.
 func (m *model) normalize() {
+	m.today = time.Now().Format("2006-01-02")
 	if m.screen == screenMenu {
 		m.pinMenu(m.menuWindow(max(1, m.height-2)))
 	} else {
@@ -1752,7 +1755,7 @@ func (m *model) columnBox(ci, w, h int) string {
 	ensure := func(i int) []string {
 		if blocks[i] == nil {
 			id := ids[i]
-			blocks[i] = cardLines(col.Cards[id], textW, id == sel, m.foldSubs, m.isPicked(ci, id), col.Archive)
+			blocks[i] = cardLines(col.Cards[id], textW, id == sel, m.foldSubs, m.isPicked(ci, id), col.Archive, m.today)
 		}
 		return blocks[i]
 	}
@@ -2168,11 +2171,11 @@ func cardLabel(card store.Card) string {
 	return label
 }
 
-func cardLines(card store.Card, width int, selected, fold, picked, archive bool) []string {
+func cardLines(card store.Card, width int, selected, fold, picked, archive bool, today string) []string {
 	inner := max(1, width-2) // border takes 1 column on each side
 	mark, markW := priMark(card.Priority)
 	title := fit(cardLabel(card), max(1, inner-markW))
-	stale := daysSince(card.Moved) >= staleDays && !archive && card.Priority == 0
+	stale := daysSince(card.Moved, today) >= staleDays && !archive && card.Priority == 0
 	switch {
 	case selected:
 		title = titleStyle.Render(title)
@@ -2180,7 +2183,7 @@ func cardLines(card store.Card, width int, selected, fold, picked, archive bool)
 		title = staleStyle.Render(title)
 	}
 	lines := []string{mark + title}
-	if meta := metaLine(card, inner, !archive); meta != "" {
+	if meta := metaLine(card, inner, !archive, today); meta != "" {
 		lines = append(lines, meta)
 	}
 
@@ -3282,7 +3285,7 @@ func priMark(p int) (string, int) {
 	}
 }
 
-func metaLine(card store.Card, width int, showAge bool) string {
+func metaLine(card store.Card, width int, showAge bool, today string) string {
 	var plain []string
 	var styled []string
 	for _, tag := range card.Tags {
@@ -3296,7 +3299,7 @@ func metaLine(card store.Card, width int, showAge bool) string {
 			p = p[5:]
 		}
 		plain = append(plain, p)
-		switch dueKind(card.Due) {
+		switch dueKind(card.Due, today) {
 		case 2:
 			styled = append(styled, dueHotStyle.Render(p))
 		case 1:
@@ -3306,7 +3309,7 @@ func metaLine(card store.Card, width int, showAge bool) string {
 		}
 	}
 	if showAge {
-		if d := daysSince(card.Moved); d >= staleDays {
+		if d := daysSince(card.Moved, today); d >= staleDays {
 			p := fmt.Sprintf("%dd", d)
 			plain = append(plain, p)
 			styled = append(styled, staleStyle.Render(p))
@@ -3322,8 +3325,8 @@ func metaLine(card store.Card, width int, showAge bool) string {
 	return strings.Join(styled, " ")
 }
 
-func dueKind(due string) int {
-	today := time.Now().Format("2006-01-02")
+// dueKind reports how the due date relates to today: 1 due today, 2 overdue.
+func dueKind(due, today string) int {
 	switch {
 	case due == today:
 		return 1
@@ -3334,12 +3337,13 @@ func dueKind(due string) int {
 	}
 }
 
-func daysSince(day string) int {
+// daysSince counts whole days between day and today (0 for future/bad dates).
+func daysSince(day, today string) int {
 	t, err := time.Parse("2006-01-02", day)
 	if err != nil {
 		return 0
 	}
-	now, err := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
+	now, err := time.Parse("2006-01-02", today)
 	if err != nil {
 		return 0
 	}

@@ -601,7 +601,7 @@ func TestSignals(t *testing.T) {
 		t.Fatalf("priority %d", s.Boards[0].Columns[0].Cards[0].Priority)
 	}
 	view := m.View()
-	age := fmt.Sprintf("%dd", daysSince("2020-01-01"))
+	age := fmt.Sprintf("%dd", daysSince("2020-01-01", m.today))
 	if !strings.Contains(view, "!!") || !strings.Contains(view, "Todo 2") || !strings.Contains(view, "2 cards") || !strings.Contains(view, age) {
 		t.Fatalf("header/priority/age %s:\n%s", age, view)
 	}
@@ -924,6 +924,23 @@ func TestResizeClearsNotice(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	if m.notice != "" {
 		t.Fatalf("resize left a stale notice: %q", m.notice)
+	}
+}
+
+// dueKind/daysSince take today as a parameter so rendering one frame uses a
+// single clock read; the model caches it in normalize().
+func TestDueHelpersTakeToday(t *testing.T) {
+	if dueKind("2026-01-02", "2026-01-02") != 1 || dueKind("2026-01-01", "2026-01-02") != 2 || dueKind("", "2026-01-02") != 0 || dueKind("2026-01-03", "2026-01-02") != 0 {
+		t.Fatal("dueKind")
+	}
+	if d := daysSince("2026-01-01", "2026-01-08"); d != 7 {
+		t.Fatalf("daysSince %d", d)
+	}
+	if d := daysSince("2026-01-09", "2026-01-08"); d != 0 {
+		t.Fatalf("future daysSince %d", d)
+	}
+	if d := daysSince("nope", "2026-01-08"); d != 0 {
+		t.Fatalf("bad date daysSince %d", d)
 	}
 }
 
