@@ -459,6 +459,117 @@ func TestQuitFlushesPendingChanges(t *testing.T) {
 	}
 }
 
+// View must not change selection state: rendering twice in a row must give
+// the same frame and leave cardSel/menuSel/col untouched.
+func TestViewDoesNotMutateSelection(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil || s.AddColumn(0, "Doing") != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"alpha", "beta", "gamma"} {
+		if err := s.AddCard(0, 0, store.Card{Content: c}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddCard(0, 1, store.Card{Content: "match"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	press(m, "k") // a first Update normalizes cardSel for both columns
+	// Filtering anchors the selection to the first match per column; a stale
+	// selection exercises the clamping path too.
+	m.filtering = true
+	m.search = "match"
+	m.cardSel[0] = 999
+	press(m, "z") // Update handles the state change; View must not
+	wantSel := append([]int(nil), m.cardSel...)
+	wantCol, wantMenu := m.col, m.menuSel
+	before := m.View()
+	m.View() // a second render must be identical and change nothing
+	after := m.View()
+	if before != after {
+		t.Fatalf("View changed its own output")
+	}
+	if !sameInts(m.cardSel, wantSel) || m.col != wantCol || m.menuSel != wantMenu {
+		t.Fatalf("View mutated state: sel %v want %v col %d menu %d", m.cardSel, wantSel, m.col, wantMenu)
+	}
+}
+
+// Update alone (before any View call) must anchor the menu scroll window.
+func TestMenuScrollAnchoredInUpdate(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		if err := s.CreateBoard(fmt.Sprintf("Board%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24 // menu window holds ~18 rows
+	press(m, "G")
+	if m.menuSel != 29 {
+		t.Fatalf("menuSel %d", m.menuSel)
+	}
+	if m.menuScroll == 0 {
+		t.Fatalf("menuScroll was not anchored by Update: %d", m.menuScroll)
+	}
+}
+
+// Update alone must anchor the filtered selection to a match per column.
+func TestFilterAnchoredInUpdate(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil || s.AddColumn(0, "Doing") != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, store.Card{Content: "plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 1, store.Card{Content: "target"}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 24
+	m.filtering = true
+	m.search = "target"
+	press(m, "z") // harmless key; no View call yet
+	if !sameInts(m.cardSel, []int{0, 0}) {
+		t.Fatalf("filter anchor did not run in Update: %v", m.cardSel)
+	}
+}
+
+func sameInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestSignals(t *testing.T) {
 	dir := t.TempDir()
 	s, err := store.Load(filepath.Join(dir, "data"), filepath.Join(dir, "data_bkp"))

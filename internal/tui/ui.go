@@ -243,7 +243,47 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.onKey("ctrl+backspace", nil)
 		}
 	}
+	m.normalize()
 	return m, m.settle()
+}
+
+// normalize re-anchors selection state after any change so that View never
+// mutates: menu window, visible column, card selection and the filter anchor
+// are all settled here. Layout-dependent card scroll stays with the renderer.
+func (m *model) normalize() {
+	if m.screen == screenMenu {
+		m.pinMenu(m.menuWindow(max(1, m.height-2)))
+	} else {
+		m.pinCol()
+	}
+	m.growCardSel()
+	m.clampCardSel()
+	if m.screen == screenBoard && m.filtering && m.searchTerm() != "" {
+		m.snapShown()
+	}
+}
+
+// clampCardSel pulls every focused card back into its column.
+func (m *model) clampCardSel() {
+	b := m.curBoard()
+	if b == nil {
+		return
+	}
+	for c := range b.Columns {
+		if c >= len(m.cardSel) {
+			return
+		}
+		n := len(b.Columns[c].Cards)
+		if n == 0 {
+			continue
+		}
+		if m.cardSel[c] >= n {
+			m.cardSel[c] = n - 1
+		}
+		if m.cardSel[c] < 0 {
+			m.cardSel[c] = 0
+		}
+	}
 }
 
 // settle flushes pending changes and schedules the next debounced write.
@@ -1339,6 +1379,25 @@ func (m *model) cardIndex(ci int) int {
 	return m.cardSel[ci]
 }
 
+// cardAt reads the focused card of column ci without touching state. Update
+// normalizes cardSel; this only guards against a stale value during render.
+func (m *model) cardAt(ci int) int {
+	b := m.curBoard()
+	if b == nil || ci < 0 || ci >= len(b.Columns) || len(b.Columns[ci].Cards) == 0 {
+		return -1
+	}
+	if ci >= len(m.cardSel) {
+		return 0
+	}
+	sel := m.cardSel[ci]
+	if n := len(b.Columns[ci].Cards); sel >= n {
+		sel = n - 1
+	} else if sel < 0 {
+		sel = 0
+	}
+	return sel
+}
+
 func (m *model) visibleCols() int {
 	switch {
 	case m.width < 48:
@@ -1578,8 +1637,7 @@ func (m *model) menuBody(h int) string {
 	innerW := max(36, min(64, m.width-8))
 	textW := max(8, innerW-2)
 	innerH := max(8, h-2)
-	window := max(1, innerH-2)
-	m.pinMenu(window)
+	window := m.menuWindow(h)
 	var lines []string
 	if len(m.store.Boards) == 0 {
 		lines = append(lines, mutedStyle.Render("c to create a new board"))
@@ -1625,6 +1683,11 @@ func boardRow(b store.Board, width int) string {
 	return name + strings.Repeat(" ", gap) + meta
 }
 
+// menuWindow is the number of rows the menu list can show.
+func (m *model) menuWindow(h int) int {
+	return max(1, max(8, h-2)-2)
+}
+
 func (m *model) boardBody(h int) string {
 	b := m.curBoard()
 	if b == nil || len(b.Columns) == 0 {
@@ -1634,7 +1697,6 @@ func (m *model) boardBody(h int) string {
 	if len(ids) == 0 {
 		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, mutedStyle.Render("v to show the archive"))
 	}
-	m.pinCol()
 	vis := m.visibleCols()
 	gap := 1
 	colW := (m.width - gap*(vis-1)) / vis
@@ -1658,10 +1720,7 @@ func (m *model) columnBox(ci, w, h int) string {
 	innerH := max(2, h-2)
 	cardRoom := max(1, innerH-1)
 	textW := max(1, innerW-2)
-	if ci == m.col && m.filtering && m.searchTerm() != "" {
-		m.snapShown()
-	}
-	focus := m.cardIndex(ci)
+	focus := m.cardAt(ci)
 	sel := -1
 	if ci == m.col {
 		sel = focus
@@ -1930,6 +1989,7 @@ func (m *model) scrollShown(ci, n, selPos, room int, count func(int) int) int {
 	if selPos < 0 || n == 0 || room < 1 {
 		return 0
 	}
+	// Update normalizes; this grow only guards renders that run first.
 	m.growCardSel()
 	if m.cardScroll[ci] > selPos {
 		m.cardScroll[ci] = selPos
@@ -2664,7 +2724,7 @@ func (m *model) position() string {
 		pos = m.col + 1
 	}
 	s := fmt.Sprintf("col %d/%d", pos, total)
-	if ci := m.cardIndex(m.col); ci >= 0 {
+	if ci := m.cardAt(m.col); ci >= 0 {
 		ids := m.shownIDs(m.col)
 		pos := 0
 		for i, id := range ids {
