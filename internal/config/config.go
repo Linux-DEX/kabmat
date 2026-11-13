@@ -142,6 +142,17 @@ func Path() (string, error) {
 	return filepath.Join(base, "kabmat", "config"), nil
 }
 
+// ParseError is a config file that could not be parsed. It carries the
+// defaults so callers can start anyway and show the error.
+type ParseError struct {
+	Config
+	Err error
+}
+
+func (e ParseError) Error() string {
+	return e.Err.Error()
+}
+
 // Load reads the config file. A missing file returns Default.
 func Load() (Config, error) {
 	path, err := Path()
@@ -167,13 +178,17 @@ func Load() (Config, error) {
 		}
 		return Config{}, err
 	}
-	cfg, err = parse(string(b), cfg)
+	parsed, err := parse(string(b), cfg)
 	if err != nil {
-		return Config{}, fmt.Errorf("%s: %w", path, err)
+		// The broken file's values are unpredictable, so the fallback is
+		// the clean defaults, not a partial parse.
+		fallback := Default()
+		fallback.Path = path
+		return Config{}, ParseError{Config: fallback, Err: fmt.Errorf("%s: %w", path, err)}
 	}
-	cfg.Path = path
-	cfg.Exists = true
-	return cfg, nil
+	parsed.Path = path
+	parsed.Exists = true
+	return parsed, nil
 }
 
 func parse(s string, cfg Config) (Config, error) {

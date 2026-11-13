@@ -998,6 +998,38 @@ func TestThemeInputErrorsStayVisible(t *testing.T) {
 	}
 }
 
+// A broken config file must not stop the app: it falls back to defaults and
+// shows the parse error as a notice.
+func TestBrokenConfigStillStarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	t.Setenv("KABMAT_CONFIG", path)
+	if err := os.WriteFile(path, []byte("theme"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	s, err := store.Load(filepath.Join(data, "data"), filepath.Join(data, "data_bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Work"); err != nil || s.AddColumn(0, "Todo") != nil {
+		t.Fatal(err)
+	}
+	m, err := newModel(s, "")
+	if err != nil {
+		t.Fatalf("broken config blocked startup: %v", err)
+	}
+	if m.themeName != "linux-dex" {
+		t.Fatalf("theme %s", m.themeName)
+	}
+	if !strings.Contains(m.notice, "config") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	m.width, m.height = 80, 24
+	if view := m.View(); !strings.Contains(view, "Work") {
+		t.Fatal(view)
+	}
+}
+
 func TestConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
@@ -1082,8 +1114,10 @@ func TestConfigFile(t *testing.T) {
 	}
 
 	os.WriteFile(path, []byte("[keys.board]\nnope z\n"), 0o600)
-	if _, err := newModel(s, "Work"); err == nil {
-		t.Fatal("bad config should fail to open")
+	if m, err := newModel(s, "Work"); err != nil {
+		t.Fatalf("bad config should not block startup: %v", err)
+	} else if m.themeName != "linux-dex" || !strings.Contains(m.notice, "unknown action") {
+		t.Fatalf("bad config fallback: theme %s notice %q", m.themeName, m.notice)
 	}
 }
 

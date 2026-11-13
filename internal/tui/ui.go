@@ -179,7 +179,14 @@ func newModel(s *store.Store, open string) (*model, error) {
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, err
+		if ce, ok := err.(config.ParseError); ok {
+			// A broken config must not stop the app: fall back to the
+			// built-in theme and keys, and show what is wrong.
+			cfg = ce.Config
+			m.notice = ce.Error()
+		} else {
+			return nil, err
+		}
 	}
 	m.cfg = cfg
 	m.loadTheme()
