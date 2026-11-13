@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Linux-DEX/kabmat/internal/fsutil"
 )
 
 // Config is the user file under $XDG_CONFIG_HOME/kabmat/config
@@ -281,14 +283,15 @@ func parseKeys(line string, actions map[string][]string, index *map[string]strin
 
 func parseColor(line string, colors map[string]string) error {
 	fields := strings.Fields(line)
-	if len(fields) != 2 || !colorKeys[fields[0]] || !validColor(fields[1]) {
+	if len(fields) != 2 || !colorKeys[fields[0]] || !ValidColor(fields[1]) {
 		return fmt.Errorf("color is a name and a value, got %q", line)
 	}
 	colors[fields[0]] = fields[1]
 	return nil
 }
 
-func validColor(s string) bool {
+// ValidColor is an SGR-safe color: "#rgb"/"#rrggbb" hex or 0-255 decimal.
+func ValidColor(s string) bool {
 	if strings.HasPrefix(s, "#") {
 		h := s[1:]
 		if len(h) != 3 && len(h) != 6 {
@@ -411,32 +414,7 @@ func Save(c Config) error {
 		return err
 	}
 	// Rename replaces a symlink instead of writing through it.
-	return writeAtomic(c.Path, []byte(c.encode()), 0o600)
-}
-
-func writeAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".kabmat-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return fsutil.WriteFileAtomic(c.Path, []byte(c.encode()), 0o600)
 }
 
 func (c Config) encode() string {

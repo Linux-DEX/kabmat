@@ -154,32 +154,6 @@ func knownColorKey(key string) bool {
 	return false
 }
 
-func validColor(s string) bool {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "#") {
-		h := s[1:]
-		if len(h) != 3 && len(h) != 6 {
-			return false
-		}
-		for _, c := range h {
-			switch {
-			case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
-			default:
-				return false
-			}
-		}
-		return true
-	}
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-		n = n*10 + int(c-'0')
-	}
-	return s != "" && n <= 255
-}
-
 func applyPalette(p palette) {
 	p = p.fill()
 	ink := lipgloss.Color(p.ink)
@@ -233,7 +207,7 @@ func parseThemes(s string) []scheme {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) == 2 && knownColorKey(fields[0]) && validColor(fields[1]) {
+		if len(fields) == 2 && knownColorKey(fields[0]) && config.ValidColor(fields[1]) {
 			if cur != nil {
 				cur.pal.set(fields[0], fields[1])
 			}
@@ -474,7 +448,7 @@ func (m *model) setSchemeColor(val string) error {
 		return nil
 	}
 	val = strings.TrimSpace(val)
-	if !validColor(val) {
+	if !config.ValidColor(val) {
 		return errors.New("color is 0-255 or #hex")
 	}
 	m.schemes[m.schemeSel].user = true

@@ -876,9 +876,9 @@ func (m *model) checkKey(key string) {
 			m.checkSel = n - 1
 		}
 	case "K", "shift+up":
-		m.checkSel = moveItem(m.edit.checklist, m.checkSel, -1)
+		m.checkSel = moveAt(m.edit.checklist, m.checkSel, -1)
 	case "J", "shift+down":
-		m.checkSel = moveItem(m.edit.checklist, m.checkSel, 1)
+		m.checkSel = moveAt(m.edit.checklist, m.checkSel, 1)
 	case "c":
 		m.openInput(inputNewItem, " New Item ", "")
 	case "e":
@@ -921,9 +921,9 @@ func (m *model) subListKey(key string) {
 			m.subSel = n - 1
 		}
 	case "K", "shift+up":
-		m.subSel = moveSub(m.edit.subtasks, m.subSel, -1)
+		m.subSel = moveAt(m.edit.subtasks, m.subSel, -1)
 	case "J", "shift+down":
-		m.subSel = moveSub(m.edit.subtasks, m.subSel, 1)
+		m.subSel = moveAt(m.edit.subtasks, m.subSel, 1)
 	case "c":
 		m.openSubtask(-1)
 	case "e", "enter":
@@ -2299,16 +2299,9 @@ func cloneSubs(in []store.Subtask) []store.Subtask {
 	return out
 }
 
-func moveSub(items []store.Subtask, i, dir int) int {
-	j := i + dir
-	if i < 0 || j < 0 || i >= len(items) || j >= len(items) {
-		return i
-	}
-	items[i], items[j] = items[j], items[i]
-	return j
-}
-
-func moveItem(items []store.ChecklistItem, i, dir int) int {
+// moveAt swaps item i with its neighbor in dir (-1 up, +1 down) and returns
+// the new index, or i when the move is out of range.
+func moveAt[T any](items []T, i, dir int) int {
 	j := i + dir
 	if i < 0 || j < 0 || i >= len(items) || j >= len(items) {
 		return i

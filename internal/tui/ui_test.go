@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Linux-DEX/kabmat/internal/config"
 	"github.com/Linux-DEX/kabmat/internal/store"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -910,7 +911,7 @@ func TestUserTheme(t *testing.T) {
 	if len(got) != 1 || got[0].name != "dusk" || got[0].pal.accent != "111" || got[0].pal.paper != "236" {
 		t.Fatalf("%+v", got)
 	}
-	if !validColor("#abc") || !validColor("#aabbcc") || validColor("#gg0000") || !validColor("0") || validColor("256") || validColor("") {
+	if !config.ValidColor("#abc") || !config.ValidColor("#aabbcc") || config.ValidColor("#gg0000") || !config.ValidColor("0") || config.ValidColor("256") || config.ValidColor("") {
 		t.Fatal("color")
 	}
 	dir := t.TempDir()

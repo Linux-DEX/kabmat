@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Linux-DEX/kabmat/internal/fsutil"
 )
 
 const (
@@ -943,31 +945,6 @@ func sortPicks(picks [][2]int) {
 	}
 }
 
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".kabmat-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
-}
-
 func (s *Store) write(data string) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return err
@@ -975,7 +952,7 @@ func (s *Store) write(data string) error {
 	if !s.backedUp {
 		if cur, err := os.ReadFile(s.Path); err == nil {
 			if len(cur) > 0 {
-				if err := writeFileAtomic(s.Backup, cur, 0o600); err != nil {
+				if err := fsutil.WriteFileAtomic(s.Backup, cur, 0o600); err != nil {
 					return err
 				}
 			}
@@ -984,7 +961,7 @@ func (s *Store) write(data string) error {
 		}
 		s.backedUp = true
 	}
-	return writeFileAtomic(s.Path, []byte(data), 0o600)
+	return fsutil.WriteFileAtomic(s.Path, []byte(data), 0o600)
 }
 
 // save records the undo snapshot and marks the store dirty. Flush writes the file.
@@ -1049,7 +1026,7 @@ func LoadPlace(dataPath string) (Place, error) {
 
 func SavePlace(dataPath string, p Place) error {
 	data := p.Board + "\n" + strconv.Itoa(p.Col) + "\n" + strconv.Itoa(p.Card) + "\n"
-	return writeFileAtomic(placePath(dataPath), []byte(data), 0o600)
+	return fsutil.WriteFileAtomic(placePath(dataPath), []byte(data), 0o600)
 }
 
 // Markdown is a board snapshot for sharing. It leaves out last-moved dates.
