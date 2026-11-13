@@ -537,7 +537,7 @@ func (s *Store) Index(name string) (int, error) {
 }
 
 func validBoardName(name string) (string, error) {
-	name = strings.TrimSpace(name)
+	name = stripControls(strings.TrimSpace(name))
 	if name == "" {
 		return "", errors.New("board name can't be empty")
 	}
@@ -554,7 +554,7 @@ func validCardContent(s string) (string, error) {
 	if strings.ContainsAny(s, "\r\n") {
 		return "", errors.New("card text can't contain a newline")
 	}
-	s = strings.TrimSpace(s)
+	s = stripControls(strings.TrimSpace(s))
 	if s == "" {
 		return "", errEmptyName
 	}
@@ -565,7 +565,7 @@ func validCardContent(s string) (string, error) {
 // a braced title would come back from the file with different WIP/gate/archive
 // settings and a shortened name.
 func validColumnTitle(s string) (string, error) {
-	s = strings.TrimSpace(s)
+	s = stripControls(strings.TrimSpace(s))
 	if s == "" {
 		return "", errEmptyName
 	}
@@ -681,12 +681,26 @@ func (s *Store) AddCard(bi, ci int, card Card) error {
 	return s.InsertCard(bi, ci, len(s.Boards[bi].Columns[ci].Cards), card)
 }
 
+// sanitizeCard strips terminal control characters from the free-text fields
+// that have no other validator. Tags go through ParseTags separately.
+func sanitizeCard(card *Card) {
+	card.Description = stripControls(card.Description)
+	for i := range card.Checklist {
+		card.Checklist[i].Content = stripControls(card.Checklist[i].Content)
+	}
+	for i := range card.Subtasks {
+		card.Subtasks[i].Content = stripControls(card.Subtasks[i].Content)
+		card.Subtasks[i].Description = stripControls(card.Subtasks[i].Description)
+	}
+}
+
 func (s *Store) InsertCard(bi, ci, at int, card Card) error {
 	content, err := validCardContent(card.Content)
 	if err != nil {
 		return err
 	}
 	card.Content = content
+	sanitizeCard(&card)
 	card.Tags = ParseTags(strings.Join(card.Tags, " "))
 	if card.Priority < 0 {
 		card.Priority = 0
@@ -716,6 +730,7 @@ func (s *Store) UpdateCard(bi, ci, cardi int, card Card) error {
 		return err
 	}
 	card.Content = content
+	sanitizeCard(&card)
 	card.Tags = ParseTags(strings.Join(card.Tags, " "))
 	if card.Priority < 0 {
 		card.Priority = 0

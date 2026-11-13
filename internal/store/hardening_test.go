@@ -17,6 +17,56 @@ func newStore(t *testing.T) *Store {
 	return s
 }
 
+// Control characters pasted into TUI text must be stripped before they reach
+// the file, the same way parse() strips them on read.
+func TestWriteStripsControls(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Load(filepath.Join(dir, "data"), filepath.Join(dir, "bkp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBoard("Bo\x1b[31mard"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddColumn(0, "Co\x07l"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCard(0, 0, Card{
+		Content:     "card\x1b[2Jtext",
+		Description: "desc\x1b[31mred",
+		Checklist:   []ChecklistItem{{Content: "item\x07"}},
+		Subtasks:    []Subtask{{Content: "sub\x1b[0m", Description: "sd\x1bc"}},
+		Tags:        ParseTags("t\x1bag"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(s.Path, s.Backup); err != nil {
+		t.Fatalf("roundtrip: %v", err)
+	}
+	card := s.Boards[0].Columns[0].Cards[0]
+	for _, part := range []struct{ what, text string }{
+		{"board", s.Boards[0].Name},
+		{"column", s.Boards[0].Columns[0].Title},
+		{"card", card.Content},
+		{"desc", card.Description},
+		{"checklist", card.Checklist[0].Content},
+		{"subtask", card.Subtasks[0].Content},
+		{"subtask desc", card.Subtasks[0].Description},
+	} {
+		for _, r := range part.text {
+			if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+				t.Fatalf("%s contains control char %q: %q", part.what, r, part.text)
+			}
+		}
+	}
+	if got := s.Boards[0].Name; got != "Bo[31mard" {
+		t.Fatalf("board name %q", got)
+	}
+	if got := card.Content; got != "card[2Jtext" {
+		t.Fatalf("card content %q", got) // ESC removed, visible chars kept
+	}
+}
+
 func TestCardContentRejectsNewline(t *testing.T) {
 	for _, text := range []string{"a\nb", "a\rb", "a\r\nb", "\nlead"} {
 		dir := t.TempDir()
