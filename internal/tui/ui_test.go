@@ -480,6 +480,29 @@ func TestSignals(t *testing.T) {
 	}
 }
 
+// fit must truncate by terminal cell width, not rune count: a string of
+// wide glyphs must fit inside n columns.
+func TestFitTruncatesByCellWidth(t *testing.T) {
+	// "\u6f22" (漢) is 2 cells wide in every CJK-capable terminal.
+	wide := strings.Repeat("\u6f22", 5) // 10 cells
+	got := fit(wide, 5)
+	if w := lipgloss.Width(got); w > 5 {
+		t.Fatalf("fit(%q, 5) is %d cells wide: %q", wide, w, got)
+	}
+	if got := lipgloss.Width(fit(wide, 5)); got != 5 {
+		t.Fatalf("want 5 cells, got %d: %q", got, fit(wide, 5))
+	}
+	if got := fit("hello", 5); got != "hello" {
+		t.Fatalf("ascii %q", got)
+	}
+	if got := fit("hello!", 5); got != "hell…" {
+		t.Fatalf("ascii ellipsis %q", got)
+	}
+	if w := lipgloss.Width(fit("ab", 1)); w != 1 {
+		t.Fatalf("n=1 gives %d cells: %q", w, fit("ab", 1))
+	}
+}
+
 func TestWordErase(t *testing.T) {
 	f := newField("hello world", false)
 	f.insert = true

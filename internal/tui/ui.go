@@ -2815,16 +2815,16 @@ func (m *model) findFrom(term string, c0, i0, dir int, includeStart bool) bool {
 }
 
 func (m *model) searchBar() string {
-	text := []rune(m.searchBuf.value())
+	text := m.searchBuf.value()
 	right := ""
 	if m.searchMiss {
 		right = " pattern not found "
 	}
 	room := max(1, m.width-lipgloss.Width(right)-2)
-	if len(text) > room {
-		text = text[len(text)-room:]
+	if w := ansi.StringWidth(text); w > room {
+		text = ansi.TruncateLeft(text, w-room, "")
 	}
-	left := "/" + string(text)
+	left := "/" + text
 	pad := max(0, m.width-lipgloss.Width(left)-1-lipgloss.Width(right))
 	return barStyle.Render(left) + modeStyle.Render(" ") +
 		barStyle.Render(strings.Repeat(" ", pad)+right)

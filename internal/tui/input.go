@@ -5,6 +5,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // field is a vim-like line editor. multi allows j/k and newlines.
@@ -584,32 +585,11 @@ func (f field) render(width int) string {
 
 var cursorStyle = lipgloss.NewStyle().Reverse(true)
 
+// fit truncates s to at most n terminal cells. It is display-width aware
+// (CJK, emoji) and preserves ANSI styling in the truncated output.
 func fit(s string, n int) string {
 	if n < 1 {
 		return ""
 	}
-	r := []rune(stripANSI(s))
-	if len(r) <= n {
-		return s
-	}
-	plain := stripANSI(s)
-	pr := []rune(plain)
-	if n == 1 {
-		return string(pr[:1])
-	}
-	return string(pr[:n-1]) + "…"
-}
-
-func stripANSI(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] != 0x1b {
-			b.WriteByte(s[i])
-			continue
-		}
-		for i < len(s) && s[i] != 'm' {
-			i++
-		}
-	}
-	return b.String()
+	return ansi.Truncate(s, n, "…")
 }
