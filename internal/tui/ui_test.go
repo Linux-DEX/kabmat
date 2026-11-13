@@ -652,10 +652,6 @@ func TestSignals(t *testing.T) {
 	if !strings.Contains(m.View(), "keep") || !strings.Contains(m.View(), "Archive") {
 		t.Fatal(m.View())
 	}
-	due, err := parseDue("+0")
-	if err != nil || due == "" {
-		t.Fatal(err, due)
-	}
 }
 
 // fit must truncate by terminal cell width, not rune count: a string of

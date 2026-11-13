@@ -794,19 +794,7 @@ func (s *Store) MoveCardVert(bi, ci, cardi, dir int) (bool, error) {
 	return true, s.save()
 }
 
-func (s *Store) MoveCardHoriz(bi, src, cardi, dir int) (bool, error) {
-	return s.MoveCardTo(bi, src, cardi, src+dir)
-}
-
-func (s *Store) MoveCardTo(bi, src, cardi, dst int) (bool, error) {
-	_, n, err := s.batchRelocate(bi, [][2]int{{src, cardi}}, func([2]int) int { return dst })
-	return n > 0, err
-}
-
 var errNoMove = errors.New("card stays")
-
-// ErrArchived is returned when the card is already in an archive column.
-var ErrArchived = errors.New("already archived")
 
 // batchRelocate relocates each [column, card] pick to dstOf's column as one
 // undo step. Picks must be ordered bottom-up, later in a column after
@@ -886,22 +874,6 @@ func (s *Store) archiveColumn(bi int) int {
 	}
 	s.Boards[bi].Columns = append(cols, Column{Title: "Archive", Archive: true})
 	return len(s.Boards[bi].Columns) - 1
-}
-
-// ArchiveCard moves a card into the board's archive column, creating one if needed.
-func (s *Store) ArchiveCard(bi, src, cardi int) (int, error) {
-	cols := s.Boards[bi].Columns
-	if src < 0 || src >= len(cols) || cardi < 0 || cardi >= len(cols[src].Cards) {
-		return 0, errNoMove
-	}
-	if cols[src].Archive {
-		return src, ErrArchived
-	}
-	dst := s.archiveColumn(bi)
-	if err := s.relocate(bi, src, cardi, dst); err != nil {
-		return dst, err
-	}
-	return dst, s.save()
 }
 
 // ArchiveCards moves each pick into the board's first archive column (creating

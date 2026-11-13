@@ -86,8 +86,8 @@ func TestMoveCardAcross(t *testing.T) {
 	if err := s.AddCard(0, 0, Card{Content: "ship"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MoveCardHoriz(0, 0, 0, 1); err != nil {
-		t.Fatal(err)
+	if _, n, err := s.MoveCardsTo(0, [][2]int{{0, 0}}, 1); err != nil || n != 1 {
+		t.Fatal(err, n)
 	}
 	if len(s.Boards[0].Columns[0].Cards) != 0 || s.Boards[0].Columns[1].Cards[0].Content != "ship" {
 		t.Fatalf("top insert failed: %+v", s.Boards[0].Columns)
@@ -96,8 +96,8 @@ func TestMoveCardAcross(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.CardAtBottom = true
-	if _, err := s.MoveCardHoriz(0, 1, 0, -1); err != nil {
-		t.Fatal(err)
+	if _, n, err := s.MoveCardsTo(0, [][2]int{{1, 0}}, 0); err != nil || n != 1 {
+		t.Fatal(err, n)
 	}
 	got := s.Boards[0].Columns[0].Cards
 	if len(got) != 1 || got[0].Content != "ship" {
@@ -220,14 +220,14 @@ func TestWIPGateArchive(t *testing.T) {
 	if err := s.AddCard(0, 0, card); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MoveCardTo(0, 0, 0, 2); err == nil || !strings.Contains(err.Error(), "checklist") {
+	if _, _, err := s.MoveCardsTo(0, [][2]int{{0, 0}}, 2); err == nil || !strings.Contains(err.Error(), "checklist") {
 		t.Fatal(err)
 	}
 	card.Checklist[0].Done = true
 	if err := s.UpdateCard(0, 0, 0, card); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MoveCardTo(0, 0, 0, 2); err != nil {
+	if _, _, err := s.MoveCardsTo(0, [][2]int{{0, 0}}, 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetWIP(0, 0, 1); err != nil {
@@ -239,14 +239,11 @@ func TestWIPGateArchive(t *testing.T) {
 	if err := s.AddCard(0, 0, Card{Content: "two"}); err == nil || !strings.Contains(err.Error(), "WIP") {
 		t.Fatal(err)
 	}
-	if _, err := s.ArchiveCard(0, 0, 0); err != nil {
+	if _, _, err := s.ArchiveCards(0, [][2]int{{0, 0}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.Boards[0].Columns[0].Cards) != 0 || s.Boards[0].Columns[3].Title != "Archive" || !s.Boards[0].Columns[3].Archive {
 		t.Fatalf("archive: %+v", s.Boards[0].Columns)
-	}
-	if _, err := s.ArchiveCard(0, 3, 0); err != ErrArchived {
-		t.Fatal(err)
 	}
 	md := Markdown(s.Boards)
 	if !strings.Contains(md, "# Work") || !strings.Contains(md, "## Archive (1)") || !strings.Contains(md, "ship") {

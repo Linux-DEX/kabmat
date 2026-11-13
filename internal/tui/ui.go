@@ -2265,20 +2265,6 @@ func panelBox(title, body string, totalW, totalH int, on bool) string {
 	return st.Width(contentW).Height(contentH).Render(strings.Join(lines, "\n"))
 }
 
-func panel(title, body string, total int, on bool) string {
-	st := boxStyle
-	if on {
-		st = boxOnStyle
-	}
-	contentW := max(8, total-2)
-	textW := max(1, contentW-2)
-	lines := []string{fit(title, textW)}
-	for _, line := range strings.Split(body, "\n") {
-		lines = append(lines, clampLine(line, textW))
-	}
-	return st.Width(contentW).Render(strings.Join(lines, "\n"))
-}
-
 func clampLine(line string, n int) string {
 	if lipgloss.Width(line) <= n {
 		return line
@@ -3371,22 +3357,4 @@ func cardStatus(e cardEdit) string {
 		parts = append(parts, "due "+e.due)
 	}
 	return strings.Join(parts, " ")
-}
-
-func parseDue(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", nil
-	}
-	if strings.HasPrefix(s, "+") {
-		n, err := strconv.Atoi(s[1:])
-		if err != nil || n < 0 {
-			return "", errors.New("snooze is +days")
-		}
-		return time.Now().AddDate(0, 0, n).Format("2006-01-02"), nil
-	}
-	if _, err := time.Parse("2006-01-02", s); err != nil {
-		return "", errors.New("due date is YYYY-MM-DD or +days")
-	}
-	return s, nil
 }
