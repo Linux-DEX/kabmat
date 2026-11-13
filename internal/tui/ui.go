@@ -375,16 +375,28 @@ func (m *model) onKey(key string, runes []rune) {
 	}
 }
 
+// Probe substrings of bubbletea's unknownCSISequenceMsg string form for the
+// ctrl+backspace variants, precomputed as constants.
+const (
+	csiBackspaceKitty1 = "49 50 55 59 53 117"          // 127;5u
+	csiBackspaceKitty2 = "49 50 55 59 53 59 49 117"    // 127;5;1u (press)
+	csiBackspaceOther  = "50 55 59 53 59 49 50 55 126" // ESC[27;5;127~
+)
+
 // ctrlBackspaceCSI reports Kitty CSI-u and xterm modifyOtherKeys for ctrl+backspace.
 // Those sequences differ by terminal; bubbletea 1.3 leaves them as an unknown CSI message.
 func ctrlBackspaceCSI(msg tea.Msg) bool {
-	s := fmt.Sprint(msg)
-	// 127;5u and 127;5;1u (press)
-	if strings.Contains(s, "49 50 55 59 53 117") || strings.Contains(s, "49 50 55 59 53 59 49 117") {
-		return true
+	// High-frequency messages that cannot carry a CSI sequence skip the
+	// string conversion entirely.
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg, tea.FocusMsg, tea.BlurMsg,
+		tea.WindowSizeMsg, flushTickMsg:
+		return false
 	}
-	// ESC [ 27 ; 5 ; 127 ~
-	return strings.Contains(s, "50 55 59 53 59 49 50 55 126")
+	s := fmt.Sprint(msg)
+	return strings.Contains(s, csiBackspaceKitty1) ||
+		strings.Contains(s, csiBackspaceKitty2) ||
+		strings.Contains(s, csiBackspaceOther)
 }
 
 func (m *model) menuKey(key string) {
